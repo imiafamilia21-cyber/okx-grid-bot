@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_KEY = os.getenv("OKX_API_KEY")
-SECRET_KEY = os.getenv("OKX_API_SECRET")  # ← теперь совпадает с Render
+SECRET_KEY = os.getenv("OKX_API_SECRET")  # ← именно так
 PASSPHRASE = os.getenv("OKX_PASSPHRASE")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
