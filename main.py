@@ -51,13 +51,29 @@ def get_positions(client, symbol):
     except:
         return {}
 
-def calculate_position_size(risk_usd, entry_price, stop_price):
-    distance = abs(entry_price - stop_price)
-    if distance == 0:
-        return 0.01
-    size = risk_usd / distance
-    min_size = 0.01
-    return max(size, min_size)
+def close_all_positions(client, symbol):
+    """Закрывает все открытые позиции по рынку"""
+    try:
+        positions = client.fetch_positions([symbol])
+        for p in positions:
+            if p.get('contracts', 0) > 0:
+                side = 'buy' if p['side'] == 'short' else 'sell'
+                size = p['contracts']
+                try:
+                    client.create_order(
+                        symbol=symbol,
+                        type='market',
+                        side=side,
+                        amount=size,
+                        params={'tdMode': 'isolated', 'posSide': 'net', 'reduceOnly': True}
+                    )
+                    msg = f"CloseOperation\nЗакрытие позиции от сетки\n{p['side'].upper()} {size:.4f} BTC"
+                    logger.info(msg)
+                    send_telegram(msg)
+                except Exception as e:
+                    logger.error(f"Ошибка закрытия позиции: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка получения позиций для закрытия: {e}")
 
 def daily_report(current_pnl):
     global total_pnl, winning_trades, total_trades, max_drawdown, equity_high
@@ -70,6 +86,7 @@ def daily_report(current_pnl):
     win_rate = round(winning_trades / total_trades * 100, 1) if total_trades > 0 else 0.0
     report = (
         f"📊 ЕЖЕДНЕВНЫЙ ОТЧЁТ\n"
+        f"Дата: {datetime.now().strftime('%d.%m.%Y')}\n"
         f"Общий PnL: {total_pnl:+.2f} USDT\n"
         f"Сделок: {total_trades}\n"
         f"Win Rate: {win_rate}%\n"
@@ -77,51 +94,6 @@ def daily_report(current_pnl):
     )
     logger.info(report)
     send_telegram(report)
-
-def open_trend_position(client, symbol, capital, direction, price, atr):
-    risk_usd = capital * RISK_PER_TRADE
-    stop_multiplier = 2.0
-    stop_distance = atr * stop_multiplier
-    
-    if direction == 'buy':
-        stop_price = price - stop_distance
-    else:
-        stop_price = price + stop_distance
-
-    size = calculate_position_size(risk_usd, price, stop_price)
-    if size <= 0.01:
-        size = 0.01
-
-    try:
-        order = client.create_order(
-            symbol=symbol,
-            type='market',
-            side=direction,
-            amount=size,
-            params={'tdMode': 'isolated', 'posSide': 'net'}
-        )
-        client.create_order(
-            symbol=symbol,
-            type='trigger',
-            side='sell' if direction == 'buy' else 'buy',
-            amount=size,
-            price=price,
-            params={
-                'triggerPrice': stop_price,
-                'reduceOnly': True,
-                'tdMode': 'isolated',
-                'posSide': 'net'
-            }
-        )
-        msg = f"🚀 Тренд-фолловинг\n{direction.upper()} {size:.4f} BTC\nСтоп: {stop_price:.1f}"
-        logger.info(msg)
-        send_telegram(msg)
-        return True
-    except Exception as e:
-        err_msg = f"⚠️ Ошибка тренд-позиции: {e}"
-        logger.error(err_msg)
-        send_telegram(err_msg)
-        return False
 
 def rebalance_grid():
     global last_positions, last_report_date, daily_start_pnl, total_pnl, total_trades, winning_trades
@@ -184,14 +156,18 @@ def rebalance_grid():
     df = fetch_ohlcv(client, SYMBOL)
     indicators = calculate_ema_rsi_atr(df)
     trend_flag, direction = is_trending(indicators)
-    
-    if trend_flag and not current_positions:
+    if trend_flag:
+        # 1. Закрываем все текущие позиции от сетки
+        if current_positions:
+            close_all_positions(client, SYMBOL)
+        # 2. Отменяем сетку
         cancel_all_orders(client, SYMBOL)
+        # 3. Открываем тренд-позицию
         open_trend_position(client, SYMBOL, INITIAL_CAPITAL, direction, indicators['price'], indicators['atr'])
         return
-    elif not trend_flag:
-        cancel_all_orders(client, SYMBOL)
-        place_grid_orders(client, SYMBOL, INITIAL_CAPITAL)
+        
+    cancel_all_orders(client, SYMBOL)
+    place_grid_orders(client, SYMBOL, INITIAL_CAPITAL)
     
     time.sleep(3)
     
@@ -206,7 +182,53 @@ def rebalance_grid():
         logger.warning(alert_msg)
         send_telegram(alert_msg)
 
-# Flask health-check
+def open_trend_position(client, symbol, capital, direction, price, atr):
+    risk_usd = capital * RISK_PER_TRADE
+    stop_multiplier = 2.0
+    stop_distance = atr * stop_multiplier
+    
+    if direction == 'buy':
+        stop_price = price - stop_distance
+    else:
+        stop_price = price + stop_distance
+
+    size = risk_usd / stop_distance
+    min_size = 0.01
+    if size < min_size:
+        size = min_size
+
+    try:
+        order = client.create_order(
+            symbol=symbol,
+            type='market',
+            side=direction,
+            amount=size,
+            params={'tdMode': 'isolated', 'posSide': 'net'}
+        )
+        client.create_order(
+            symbol=symbol,
+            type='trigger',
+            side='sell' if direction == 'buy' else 'buy',
+            amount=size,
+            price=price,
+            params={
+                'triggerPrice': stop_price,
+                'reduceOnly': True,
+                'tdMode': 'isolated',
+                'posSide': 'net'
+            }
+        )
+        msg = f"🚀 Тренд-фолловинг\n{direction.upper()} {size:.4f} BTC\nСтоп: {stop_price:.1f}"
+        logger.info(msg)
+        send_telegram(msg)
+        return True
+    except Exception as e:
+        err_msg = f"⚠️ Ошибка тренд-позиции: {e}"
+        logger.error(err_msg)
+        send_telegram(err_msg)
+        return False
+
+# Flask health-check сервер
 from flask import Flask
 import threading
 
