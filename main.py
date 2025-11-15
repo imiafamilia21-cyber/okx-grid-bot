@@ -28,6 +28,9 @@ winning_trades = 0
 max_drawdown = 0.0
 equity_high = INITIAL_CAPITAL
 
+# --- Google Apps Script Webhook URL ---
+GAS_WEBHOOK_URL = "https://script.google.com/macros/s/.../exec"  # <-- ВСТАВЬ СЮДА СВОЙ URL
+
 def send_telegram(text):
     """
     Отправляет сообщение в Telegram. Безопасно, с повторами.
@@ -49,6 +52,23 @@ def send_telegram(text):
             logger.error(f"❌ Ошибка отправки в Telegram (попытка {attempt + 1}): {e}")
         time.sleep(2)
     logger.error("❌ Не удалось отправить уведомление в Telegram после 3 попыток.")
+
+def log_to_sheet(data):
+    """
+    Отправляет данные сделки на Webhook GAS.
+    """
+    try:
+        response = requests.post(GAS_WEBHOOK_URL, json=data, timeout=10)
+        if response.status_code == 200:
+            resp_json = response.json()
+            if resp_json.get("result") == "success":
+                logger.info(f"📊 Записано в Google Sheets: {data.get('type', 'unknown')}")
+            else:
+                logger.error(f"❌ GAS вернул ошибку: {resp_json.get('message', 'unknown error')}")
+        else:
+            logger.error(f"❌ Ошибка отправки в GAS: {response.status_code}, {response.text}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка подключения к GAS: {e}")
 
 def get_positions(client, symbol):
     """
@@ -93,6 +113,20 @@ def close_all_positions(client, symbol):
                     msg = f"CloseOperation\nЗакрытие позиции от сетки\n{p['side'].upper()} {size:.4f} BTC"
                     logger.info(msg)
                     send_telegram(msg)
+                    
+                    # Запись в Google Sheets
+                    log_data = {
+                        'type': 'close_position',
+                        'symbol': SYMBOL,
+                        'side': p['side'],
+                        'size': size,
+                        'entry_price': p['entry'],
+                        'exit_price': client.fetch_ticker(SYMBOL)['last'],
+                        'pnl': p['unrealizedPnl'],
+                        'total_pnl': total_pnl + p['unrealizedPnl']
+                    }
+                    log_to_sheet(log_data)
+                    
                     closed_count += 1
                 except Exception as e:
                     logger.error(f"❌ Ошибка закрытия позиции {p['side']} {size}: {e}")
@@ -129,6 +163,19 @@ def daily_report(current_pnl):
         )
         logger.info(report)
         send_telegram(report)
+        
+        # Запись в Google Sheets
+        log_data = {
+            'type': 'daily_report',
+            'symbol': SYMBOL,
+            'side': '',
+            'size': '',
+            'entry_price': '',
+            'exit_price': '',
+            'pnl': '',
+            'total_pnl': total_pnl
+        }
+        log_to_sheet(log_data)
     except Exception as e:
         logger.error(f"❌ Ошибка при формировании ежедневного отчёта: {e}")
         send_telegram(f"❌ Ошибка ежедневного отчёта: {e}")
@@ -180,10 +227,25 @@ def open_trend_position(client, symbol, capital, direction, price, atr):
         msg = f"🚀 Тренд-фолловинг\n{direction.upper()} {size:.4f} BTC\nСтоп: {stop_price:.1f}"
         logger.info(msg)
         send_telegram(msg)
+        
+        # Запись в Google Sheets
+        log_data = {
+            'type': 'open_position',
+            'symbol': SYMBOL,
+            'side': direction,
+            'size': size,
+            'entry_price': price,
+            'exit_price': '',
+            'pnl': '',
+            'total_pnl': total_pnl
+        }
+        log_to_sheet(log_data)
+        
         return True
     except Exception as e:
-        logger.error(f"❌ Ошибка при открытии тренд-позиции: {e}")
-        send_telegram(f"❌ Ошибка тренд-позиции: {e}")
+        err_msg = f"⚠️ Ошибка тренд-позиции: {e}"
+        logger.error(err_msg)
+        send_telegram(err_msg)
         return False
 
 def rebalance_grid():
@@ -214,7 +276,7 @@ def rebalance_grid():
         current_hour = current_time.hour
         today = current_time.date()
         
-        if current_hour == 9 and today != last_report_date:  # 09:00 UTC = 12:00 MSK
+        if current_hour == 9 and today != last_report_date:
             daily_report(current_pnl)
             daily_start_pnl = current_pnl
             last_report_date = today
@@ -229,6 +291,20 @@ def rebalance_grid():
                 msg = f"🆕 Позиция открыта\n{side.upper()} {size:.4f} BTC\nЦена входа: {entry:.1f}"
                 logger.info(msg)
                 send_telegram(msg)
+                
+                # Запись в Google Sheets
+                log_data = {
+                    'type': 'open_position',
+                    'symbol': SYMBOL,
+                    'side': side,
+                    'size': size,
+                    'entry_price': entry,
+                    'exit_price': '',
+                    'pnl': '',
+                    'total_pnl': total_pnl
+                }
+                log_to_sheet(log_data)
+                
             elif last_positions and not current_positions:
                 side = last_positions['side']
                 size = last_positions['size']
@@ -242,22 +318,46 @@ def rebalance_grid():
                 msg = f"CloseOperation\n{result}\nPnL: {pnl:.2f} USDT\nИтого: {total_pnl:+.2f}\n{side.upper()} {size:.4f} BTC\nВход: {entry:.1f} → Выход: ~{price:.1f}"
                 logger.info(msg)
                 send_telegram(msg)
+                
+                # Запись в Google Sheets
+                log_data = {
+                    'type': 'close_position',
+                    'symbol': SYMBOL,
+                    'side': side,
+                    'size': size,
+                    'entry_price': entry,
+                    'exit_price': price,
+                    'pnl': pnl,
+                    'total_pnl': total_pnl
+                }
+                log_to_sheet(log_data)
+                
             last_positions = current_positions
 
         # Получаем ордера
         try:
             open_orders = client.fetch_open_orders(SYMBOL)
             order_count = len(open_orders)
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения ордеров: {e}")
-            send_telegram(f"❌ Ошибка получения ордеров: {e}")
+        except:
             order_count = 0
 
         msg = f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Перебалансировка\nЦена: {price:.1f}\nКапитал: {INITIAL_CAPITAL:.2f} USDT\nОрдеров: {order_count}"
         if current_positions:
             msg += f"\nПозиция: {current_positions['side']} {current_positions['size']:.4f} BTC\nPnL: {current_pnl:.2f} USDT"
         logger.info(msg)
-        send_telegram(msg)
+        
+        # Запись в Google Sheets
+        log_data = {
+            'type': 'rebalance',
+            'symbol': SYMBOL,
+            'side': current_positions.get('side', ''),
+            'size': current_positions.get('size', ''),
+            'entry_price': '',
+            'exit_price': '',
+            'pnl': current_pnl,
+            'total_pnl': total_pnl
+        }
+        log_to_sheet(log_data)
         
         # Проверяем тренд
         df = fetch_ohlcv(client, SYMBOL)
@@ -317,7 +417,6 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 if __name__ == "__main__":
-    # Запускаем Flask в отдельном потоке
     threading.Thread(target=run_flask, daemon=True).start()
     
     logger.info("✅ Бот запущен. Ожидание цикла перебалансировки...")
@@ -326,7 +425,6 @@ if __name__ == "__main__":
     while True:
         now = time.time()
         if int(now / 3600) != int(last_rebalance / 3600):
-            logger.info("⏰ Цикл перебалансировки запущен...")
             rebalance_grid()
             last_rebalance = now
         time.sleep(60)
