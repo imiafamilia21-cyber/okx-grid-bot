@@ -29,7 +29,7 @@ max_drawdown = 0.0
 equity_high = INITIAL_CAPITAL
 
 # --- Google Apps Script Webhook URL ---
-GAS_WEBHOOK_URL = "https://script.google.com/macros/s/.../exec"  # <-- ВСТАВЬ СЮДА СВОЙ URL
+GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzbtvlbwBIDEK8Rz1BtH-XWaIN3BZYabS93t_ERuXjBTVT82-SH7D1uLSe_FL0a1EoN/exec"
 
 def send_telegram(text):
     """
