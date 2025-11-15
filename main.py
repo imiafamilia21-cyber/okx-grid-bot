@@ -90,12 +90,12 @@ def get_positions(client, symbol):
         send_telegram(f"❌ Ошибка получения позиций: {e}")
         return {}
 
-def close_all_positions(client, symbol):
+def close_all_positions_from_grid(client, symbol):
     """
-    Закрывает все открытые позиции. Оборачивает в try-except.
+    Закрывает ВСЕ текущие позиции от сетки. Оборачивает в try-except.
     """
     try:
-        logger.info("⏳ Попытка закрытия всех позиций...")
+        logger.info("⏳ Попытка закрытия ВСЕХ позиций от сетки перед трендом...")
         positions = client.fetch_positions([symbol])
         closed_count = 0
         for p in positions:
@@ -116,7 +116,7 @@ def close_all_positions(client, symbol):
                     
                     # Запись в Google Sheets
                     log_data = {
-                        'type': 'close_position',
+                        'type': 'close_position_from_grid',
                         'symbol': SYMBOL,
                         'side': p['side'],
                         'size': size,
@@ -129,15 +129,15 @@ def close_all_positions(client, symbol):
                     
                     closed_count += 1
                 except Exception as e:
-                    logger.error(f"❌ Ошибка закрытия позиции {p['side']} {size}: {e}")
-                    send_telegram(f"❌ Ошибка закрытия позиции: {e}")
+                    logger.error(f"❌ Ошибка закрытия позиции от сетки {p['side']} {size}: {e}")
+                    send_telegram(f"❌ Ошибка закрытия позиции от сетки: {e}")
         if closed_count == 0:
-            logger.info("ℹ️ Нет открытых позиций для закрытия.")
+            logger.info("ℹ️ Нет открытых позиций от сетки для закрытия.")
         else:
-            logger.info(f"✅ Закрыто {closed_count} позиций.")
+            logger.info(f"✅ Закрыто {closed_count} позиций от сетки.")
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка при закрытии позиций: {e}")
-        send_telegram(f"❌ Критическая ошибка при закрытии позиций: {e}")
+        logger.error(f"❌ Критическая ошибка при закрытии позиций от сетки: {e}")
+        send_telegram(f"❌ Критическая ошибка при закрытии позиций от сетки: {e}")
 
 def daily_report(current_pnl):
     """
@@ -367,9 +367,10 @@ def rebalance_grid():
             logger.info(f"📈 Обнаружен тренд: {direction.upper()}")
             send_telegram(f"📈 Тренд обнаружен: {direction.upper()}")
             
+            # Если есть позиции от сетки - закрываем их перед открытием трендовой
             if current_positions:
-                logger.info("⏳ Закрываем позиции от сетки перед трендом...")
-                close_all_positions(client, SYMBOL)
+                logger.info("⏳ Закрываем ВСЕ позиции от сетки перед трендом...")
+                close_all_positions_from_grid(client, SYMBOL)
             
             logger.info("⏳ Отменяем сетку...")
             cancel_all_orders(client, SYMBOL)
