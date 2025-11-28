@@ -1,7 +1,8 @@
 import time
 import requests
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timezone
+import xml.etree.ElementTree as ET
 from okx_client import get_okx_demo_client
 from strategy import fetch_ohlcv, calculate_ema_rsi_atr, is_trending, cancel_all_orders, place_grid_orders
 from config import SYMBOL, REBALANCE_INTERVAL_HOURS, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
@@ -28,18 +29,59 @@ winning_trades = 0
 max_drawdown = 0.0
 equity_high = INITIAL_CAPITAL
 
+# --- Новостной kill-switch ---
+KEYWORDS = ["tariff", "sanction", "fed", "cpi", "fomc", "export control", "trump", "powell"]
+LOCK_HOURS = 4
+
+def news_shock_active() -> bool:
+    try:
+        r = requests.get("https://www.forexfactory.com/ffcal_week_this.xml", timeout=5)
+        root = ET.fromstring(r.content)
+        now = datetime.utcnow()
+        for event in root.findall("event"):
+            impact = event.find("impact").text
+            title = event.find("title").text.lower()
+            date_el = event.find("date")
+            time_el = event.find("time")
+            if date_el is None or time_el is None:
+                continue
+            try:
+                event_date = datetime.strptime(date_el.text, "%Y-%m-%d")
+                event_time = datetime.strptime(time_el.text, "%H:%M:%S").time()
+                ts = datetime.combine(event_date, event_time)
+                if abs((ts - now).total_seconds()) < 3600 and impact == "High" and any(k in title for k in KEYWORDS):
+                    return True
+            except:
+                continue
+    except:
+        pass
+    return False
+
+# --- OI-скрининг ---
+OI_MULT = 1.5
+
+def oi_screen(client, symbol: str) -> bool:
+    try:
+        ticker = client.fetch_ticker(symbol)
+        oi_now = float(ticker.get("openInterest", 0))
+        if oi_now == 0:
+            return False
+        hist = client.fetch_ohlcv(symbol, timeframe='1d', limit=30)
+        oi_30d = [float(c[5]) for c in hist if c[5] is not None]
+        if len(oi_30d) < 15:
+            return False
+        median_oi = sorted(oi_30d)[len(oi_30d)//2]
+        return oi_now > OI_MULT * median_oi
+    except:
+        return False
+
 # --- Stop Voron v4.3 ---
 def stop_voron(entry: float, atr: float, side: str, current_price: float = None, bar_low: float = None, 
                k: float = 2.0, min_dist_pct: float = 0.005, max_dist_pct: float = 0.03, spread_pct: float = 0.001) -> float:
-    """Универсальный стоп-лосс с защитой от гэпов и спреда"""
     if entry <= 0 or atr < 0:
         raise ValueError("Некорректные входные данные")
-    
-    # Защита от нулевого ATR
     min_atr = entry * 0.001
     atr = max(atr, min_atr)
-    
-    # Базовый стоп
     if side == "long":
         raw_stop = entry - k * atr
         min_stop = entry * (1 - min_dist_pct)
@@ -48,8 +90,6 @@ def stop_voron(entry: float, atr: float, side: str, current_price: float = None,
         raw_stop = entry + k * atr
         min_stop = entry * (1 + min_dist_pct)
         stop = max(raw_stop, min_stop)
-    
-    # Трейлинг
     if current_price is not None:
         if side == "long":
             trail_stop = current_price - k * atr
@@ -57,8 +97,6 @@ def stop_voron(entry: float, atr: float, side: str, current_price: float = None,
         else:
             trail_stop = current_price + k * atr
             stop = min(stop, trail_stop)
-    
-    # Поправка на спред
     if spread_pct > 0:
         price_for_spread = current_price if current_price is not None else entry
         spread_buffer = price_for_spread * spread_pct
@@ -66,27 +104,22 @@ def stop_voron(entry: float, atr: float, side: str, current_price: float = None,
             stop = stop + spread_buffer
         else:
             stop = stop - spread_buffer
-    
-    # Ограничение максимальной дистанции
     current_distance_pct = abs(stop - entry) / entry
     if current_distance_pct > max_dist_pct:
         if side == "long":
             stop = entry * (1 - max_dist_pct)
         else:
             stop = entry * (1 + max_dist_pct)
-    
     return round(stop, 6)
 
 def should_exit_voron(current_price: float, stop_level: float, side: str, 
                       spread_pct: float = 0.0, bar_low: float = None, bar_high: float = None) -> bool:
-    """Проверка выхода с защитой от гэпов"""
     if side == "long" and bar_low is not None:
         price_for_exit = bar_low
     elif side == "short" and bar_high is not None:
         price_for_exit = bar_high
     else:
         price_for_exit = current_price
-
     if spread_pct > 0:
         spread_buffer = price_for_exit * spread_pct
         if side == "long":
@@ -138,12 +171,18 @@ def close_all_positions(client, symbol):
     except:
         pass
 
-def log_to_sheet(data):
-    logger.info(f"📊 Data for sheet: {data}")
-
 def open_trend_position(client, symbol, capital, direction, price, atr):
     try:
-        risk_usd = capital * RISK_PER_TRADE
+        # Проверка новостей и OI
+        if news_shock_active():
+            send_telegram("⚠️ Новостной шок — вход заблокирован")
+            logger.info("Новостной шок — вход заблокирован")
+            return False
+        
+        oi_risk = oi_screen(client, symbol)
+        risk_mult = 0.5 if oi_risk else 1.0
+        risk_usd = capital * RISK_PER_TRADE * risk_mult
+        
         stop_distance = atr * 2.0
         size = risk_usd / stop_distance
         min_size = 0.01
@@ -173,6 +212,8 @@ def open_trend_position(client, symbol, capital, direction, price, atr):
         )
 
         msg = f"🚀 Тренд-фолловинг\n{direction.upper()} {size:.4f} BTC\nСтоп: {stop_price:.1f}"
+        if oi_risk:
+            msg += "\n⚠️ OI высокий — риск снижен в 2 раза"
         logger.info(msg)
         send_telegram(msg)
         return True
