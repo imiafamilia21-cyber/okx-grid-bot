@@ -29,6 +29,9 @@ winning_trades = 0
 max_drawdown = 0.0
 equity_high = INITIAL_CAPITAL
 
+# --- Google Apps Script Webhook URL ---
+GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxUdwfnx0g5gJekQ54oHhmB2eciFldGuH_ct8fav-d5wfilf4asVA2kYOBG35Nuwzig/exec"
+
 # --- Новостной kill-switch ---
 KEYWORDS = ["tariff", "sanction", "fed", "cpi", "fomc", "export control", "trump", "powell"]
 LOCK_HOURS = 4
@@ -144,6 +147,17 @@ def send_telegram(text):
         except:
             time.sleep(2)
 
+# --- Google Sheets logging ---
+def log_to_sheet(data):
+    try:
+        response = requests.post(GAS_WEBHOOK_URL, json=data, timeout=10)
+        if response.status_code == 200:
+            logger.info(f"📊 Записано в Google Sheets: {data.get('message', 'unknown')}")
+        else:
+            logger.error(f"❌ Ошибка GAS: {response.status_code}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка подключения к GAS: {e}")
+
 # --- Основные функции ---
 def get_positions(client, symbol):
     try:
@@ -173,7 +187,6 @@ def close_all_positions(client, symbol):
 
 def open_trend_position(client, symbol, capital, direction, price, atr):
     try:
-        # Проверка новостей и OI
         if news_shock_active():
             send_telegram("⚠️ Новостной шок — вход заблокирован")
             logger.info("Новостной шок — вход заблокирован")
@@ -194,7 +207,6 @@ def open_trend_position(client, symbol, capital, direction, price, atr):
             params={'tdMode': 'isolated', 'posSide': 'net'}
         )
 
-        # Расчёт стопа через Stop Voron
         stop_price = stop_voron(
             entry=price,
             atr=atr,
@@ -216,6 +228,19 @@ def open_trend_position(client, symbol, capital, direction, price, atr):
             msg += "\n⚠️ OI высокий — риск снижен в 2 раза"
         logger.info(msg)
         send_telegram(msg)
+        
+        log_data = {
+            'type': 'open_position',
+            'symbol': SYMBOL,
+            'side': direction,
+            'size': size,
+            'entry_price': price,
+            'exit_price': '',
+            'pnl': '',
+            'total_pnl': total_pnl,
+            'message': msg
+        }
+        log_to_sheet(log_data)
         return True
     except Exception as e:
         err_msg = f"⚠️ Ошибка тренд-позиции: {e}"
@@ -257,6 +282,19 @@ def rebalance_grid():
         logger.info(report)
         send_telegram(report)
         last_report_date = today
+        
+        log_data = {
+            'type': 'daily_report',
+            'symbol': SYMBOL,
+            'side': '',
+            'size': '',
+            'entry_price': '',
+            'exit_price': '',
+            'pnl': '',
+            'total_pnl': total_pnl,
+            'message': 'Ежедневный отчёт'
+        }
+        log_to_sheet(log_data)
 
     if current_positions != last_positions:
         if not last_positions and current_positions:
@@ -266,6 +304,19 @@ def rebalance_grid():
             msg = f"🆕 Позиция открыта\n{side.upper()} {size:.4f} BTC\nЦена входа: {entry:.1f}"
             logger.info(msg)
             send_telegram(msg)
+            
+            log_data = {
+                'type': 'open_position',
+                'symbol': SYMBOL,
+                'side': side,
+                'size': size,
+                'entry_price': entry,
+                'exit_price': '',
+                'pnl': '',
+                'total_pnl': total_pnl,
+                'message': msg
+            }
+            log_to_sheet(log_data)
         elif last_positions and not current_positions:
             side = last_positions['side']
             size = last_positions['size']
@@ -279,6 +330,19 @@ def rebalance_grid():
             msg = f"CloseOperation\n{result}\nPnL: {pnl:.2f} USDT\nИтого: {total_pnl:+.2f}\n{side.upper()} {size:.4f} BTC\nВход: {entry:.1f} → Выход: ~{price:.1f}"
             logger.info(msg)
             send_telegram(msg)
+            
+            log_data = {
+                'type': 'close_position',
+                'symbol': SYMBOL,
+                'side': side,
+                'size': size,
+                'entry_price': entry,
+                'exit_price': price,
+                'pnl': pnl,
+                'total_pnl': total_pnl,
+                'message': msg
+            }
+            log_to_sheet(log_data)
         last_positions = current_positions
 
     df = fetch_ohlcv(client, SYMBOL)
@@ -293,6 +357,25 @@ def rebalance_grid():
         
     cancel_all_orders(client, SYMBOL)
     place_grid_orders(client, SYMBOL, INITIAL_CAPITAL)
+    
+    msg = f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Перебалансировка\nЦена: {price:.1f}\nКапитал: {INITIAL_CAPITAL:.2f} USDT\nОрдеров: {len(client.fetch_open_orders(SYMBOL))}"
+    if current_positions:
+        msg += f"\nПозиция: {current_positions['side']} {current_positions['size']:.4f} BTC\nPnL: {current_pnl:.2f} USDT"
+    logger.info(msg)
+    send_telegram(msg)
+    
+    log_data = {
+        'type': 'rebalance',
+        'symbol': SYMBOL,
+        'side': current_positions.get('side', ''),
+        'size': current_positions.get('size', ''),
+        'entry_price': '',
+        'exit_price': '',
+        'pnl': current_pnl,
+        'total_pnl': total_pnl,
+        'message': msg
+    }
+    log_to_sheet(log_data)
 
 # Flask health-check
 from flask import Flask
