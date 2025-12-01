@@ -1,5 +1,5 @@
 from okx_client import get_okx_demo_client
-from config import SYMBOL, GRID_RANGE_PCT, GRID_LEVELS
+from config import SYMBOL
 
 def fetch_ohlcv(client, symbol, timeframe='15m', limit=100):
     return client.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -29,14 +29,12 @@ def calculate_ema_rsi_atr(ohlcv, ema_period=50, rsi_period=14, atr_period=14):
         tr3 = abs(lows[i] - closes[i-1])
         tr_list.append(max(tr1, tr2, tr3))
     atr = sum(tr_list[-atr_period:]) / atr_period if tr_list else 0
-    atr_prev = tr_list[-atr_period-1] if len(tr_list) > atr_period+1 else atr
     
     return {
         'price': closes[-1],
         'ema': ema,
         'rsi': rsi,
-        'atr': atr,
-        'atr_prev': atr_prev
+        'atr': atr
     }
 
 def is_trending(data):
@@ -44,7 +42,7 @@ def is_trending(data):
     ema = data['ema']
     rsi = data['rsi']
     atr = data['atr']
-    atr_prev = data['atr_prev']
+    atr_prev = data.get('atr_prev', atr * 0.95)
     atr_increasing = atr > atr_prev * 1.05
     if price > ema and rsi > 55 and atr_increasing:
         return True, 'buy'
@@ -64,40 +62,34 @@ def cancel_all_orders(client, symbol):
     except:
         pass
 
-def place_grid_orders(client, symbol, capital_usdt):
+def place_grid_orders(client, symbol, capital_usdt, grid_range_pct=18.0, grid_levels=5, upper_pct=None, lower_pct=None):
     ticker = client.fetch_ticker(symbol)
     price = ticker['last']
-    lower = price * (1 - GRID_RANGE_PCT / 100)
-    upper = price * (1 + GRID_RANGE_PCT / 100)
-    step = (upper - lower) / (GRID_LEVELS * 2)
-    amount_per_level = capital_usdt / (GRID_LEVELS * 2)
     min_size = 0.01
 
-    for i in range(1, GRID_LEVELS + 1):
-        buy_price = price - i * step
+    if upper_pct is not None and lower_pct is not None:
+        upper = price * (1 + upper_pct / 100)
+        lower = price * (1 - lower_pct / 100)
+        center = (upper + lower) / 2
+    else:
+        lower = price * (1 - grid_range_pct / 100)
+        upper = price * (1 + grid_range_pct / 100)
+        center = price
+
+    step = (upper - lower) / (grid_levels * 2)
+    amount_per_level = capital_usdt / (grid_levels * 2)
+
+    for i in range(1, grid_levels + 1):
+        buy_price = center - i * step
         buy_size = max(amount_per_level / buy_price, min_size)
         try:
-            client.create_order(
-                symbol=symbol,
-                type='limit',
-                side='buy',
-                amount=buy_size,
-                price=buy_price,
-                params={'posSide': 'net'}
-            )
+            client.create_order(symbol=symbol, type='limit', side='buy', amount=buy_size, price=buy_price, params={'tdMode': 'cash', 'posSide': 'net'})
         except:
             pass
         
-        sell_price = price + i * step
+        sell_price = center + i * step
         sell_size = max(amount_per_level / sell_price, min_size)
         try:
-            client.create_order(
-                symbol=symbol,
-                type='limit',
-                side='sell',
-                amount=sell_size,
-                price=sell_price,
-                params={'posSide': 'net'}
-            )
+            client.create_order(symbol=symbol, type='limit', side='sell', amount=sell_size, price=sell_price, params={'tdMode': 'cash', 'posSide': 'net'})
         except:
             pass
