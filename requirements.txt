@@ -1,4 +1,4 @@
-ccxt==4.4.85
-flask==3.0.3
-requests==2.32.3
-python-dotenv==1.0.1
+ccxt==4.3.25
+requests==2.31.0
+flask==3.0.0
+tenacity==8.2.3
