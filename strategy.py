@@ -9,11 +9,13 @@ def calculate_ema_rsi_atr(ohlcv, ema_period=50, rsi_period=14, atr_period=14):
     highs = [candle[2] for candle in ohlcv]
     lows = [candle[3] for candle in ohlcv]
     
+    # EMA
     ema = closes[-1]
     multiplier = 2 / (ema_period + 1)
     for i in range(len(closes)-2, -1, -1):
         ema = closes[i] * multiplier + ema * (1 - multiplier)
     
+    # RSI
     deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
     gains = [d for d in deltas if d > 0]
     losses = [-d for d in deltas if d < 0]
@@ -22,6 +24,7 @@ def calculate_ema_rsi_atr(ohlcv, ema_period=50, rsi_period=14, atr_period=14):
     rs = avg_gain / avg_loss if avg_loss else 0
     rsi = 100 - (100 / (1 + rs)) if rs else 50
     
+    # ATR
     tr_list = []
     for i in range(1, len(closes)):
         tr1 = highs[i] - lows[i]
@@ -63,15 +66,22 @@ def cancel_all_orders(client, symbol):
         pass
 
 def place_grid_orders(client, symbol, capital_usdt, grid_range_pct=18.0, grid_levels=5, upper_pct=None, lower_pct=None):
+    """
+    Размещает сетку ордеров.
+    Если upper_pct и lower_pct заданы — создаёт асимметричную сетку.
+    Иначе — симметричную с диапазоном grid_range_pct.
+    """
     ticker = client.fetch_ticker(symbol)
     price = ticker['last']
     min_size = 0.01
 
     if upper_pct is not None and lower_pct is not None:
+        # Адаптивная асимметричная сетка
         upper = price * (1 + upper_pct / 100)
         lower = price * (1 - lower_pct / 100)
         center = (upper + lower) / 2
     else:
+        # Симметричная сетка
         lower = price * (1 - grid_range_pct / 100)
         upper = price * (1 + grid_range_pct / 100)
         center = price
@@ -79,17 +89,20 @@ def place_grid_orders(client, symbol, capital_usdt, grid_range_pct=18.0, grid_le
     step = (upper - lower) / (grid_levels * 2)
     amount_per_level = capital_usdt / (grid_levels * 2)
 
+    # Отменяем старые ордера (на всякий случай)
+    cancel_all_orders(client, symbol)
+
     for i in range(1, grid_levels + 1):
         buy_price = center - i * step
         buy_size = max(amount_per_level / buy_price, min_size)
         try:
             client.create_order(symbol=symbol, type='limit', side='buy', amount=buy_size, price=buy_price, params={'tdMode': 'cash', 'posSide': 'net'})
-        except:
+        except Exception:
             pass
         
         sell_price = center + i * step
         sell_size = max(amount_per_level / sell_price, min_size)
         try:
             client.create_order(symbol=symbol, type='limit', side='sell', amount=sell_size, price=sell_price, params={'tdMode': 'cash', 'posSide': 'net'})
-        except:
+        except Exception:
             pass

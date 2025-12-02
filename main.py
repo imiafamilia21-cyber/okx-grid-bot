@@ -5,6 +5,7 @@ from datetime import datetime, date
 from okx_client import get_okx_demo_client
 from strategy import fetch_ohlcv, calculate_ema_rsi_atr, is_trending, cancel_all_orders, place_grid_orders
 from config import SYMBOL, REBALANCE_INTERVAL_HOURS, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from StopVoronPro import StopVoronPro
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.StreamHandler()])
 logger = logging.getLogger()
@@ -26,72 +27,7 @@ grid_center = None
 current_trend = None
 trend_confirmation = 0
 
-def stop_voron(entry: float, atr: float, side: str, current_price: float = None, 
-               k: float = 2.0, min_dist_pct: float = 0.005, max_dist_pct: float = 0.04, 
-               spread_pct: float = 0.001) -> float:
-    if entry <= 0 or atr < 0:
-        raise ValueError("Некорректные входные данные")
-    min_atr = entry * 0.001
-    atr = max(atr, min_atr)
-    if side == "long":
-        raw_stop = entry - k * atr
-        min_stop = entry * (1 - min_dist_pct)
-        stop = min(raw_stop, min_stop)
-    else:
-        raw_stop = entry + k * atr
-        min_stop = entry * (1 + min_dist_pct)
-        stop = max(raw_stop, min_stop)
-    if current_price is not None and current_price > 0:
-        if side == "long":
-            trail_stop = current_price - k * atr
-            stop = max(stop, trail_stop)
-        else:
-            trail_stop = current_price + k * atr
-            stop = min(stop, trail_stop)
-    if spread_pct > 0:
-        price_for_spread = current_price if current_price is not None else entry
-        if price_for_spread and price_for_spread > 0:
-            spread_buffer = price_for_spread * spread_pct
-            if side == "long":
-                stop = stop + spread_buffer
-            else:
-                stop = stop - spread_buffer
-    current_distance_pct = abs(stop - entry) / entry if entry != 0 else 0
-    if current_distance_pct > max_dist_pct:
-        if side == "long":
-            stop = entry * (1 - max_dist_pct)
-        else:
-            stop = entry * (1 + max_dist_pct)
-    return round(stop, 6)
-
-def should_exit_voron(current_price: float, stop_level: float, side: str, 
-                      spread_pct: float = 0.0, bar_low: float = None, bar_high: float = None) -> bool:
-    if side == "long" and bar_low is not None:
-        price_for_exit = bar_low
-    elif side == "short" and bar_high is not None:
-        price_for_exit = bar_high
-    else:
-        price_for_exit = current_price
-    if spread_pct > 0 and price_for_exit:
-        spread_buffer = price_for_exit * spread_pct
-        if side == "long":
-            return price_for_exit <= (stop_level + spread_buffer)
-        else:
-            return price_for_exit >= (stop_level - spread_buffer)
-    else:
-        if side == "long":
-            return price_for_exit <= stop_level
-        else:
-            return price_for_exit >= stop_level
-
-from tenacity import retry, stop_after_attempt, wait_exponential
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def safe_fetch_ohlcv(client, symbol, timeframe, limit):
-    return client.fetch_ohlcv(symbol, timeframe, limit)
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def safe_create_order(client, **params):
-    return client.create_order(**params)
+stop_voron = StopVoronPro(**StopVoronPro().get_recommended_settings("crypto"))
 
 def send_telegram(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -125,14 +61,8 @@ def close_all_positions(client, symbol):
             if p.get('contracts', 0) > 0:
                 side = 'buy' if p['side'] == 'short' else 'sell'
                 size = p['contracts']
-                safe_create_order(
-                    client,
-                    symbol=symbol,
-                    type='market',
-                    side=side,
-                    amount=size,
-                    params={'tdMode': 'isolated', 'posSide': 'net', 'reduceOnly': True}
-                )
+                client.create_order(symbol=symbol, type='market', side=side, amount=size,
+                                    params={'tdMode': 'isolated', 'posSide': 'net', 'reduceOnly': True})
     except:
         pass
 
@@ -152,13 +82,9 @@ def place_take_profit(client, symbol, side, entry, stop, size):
         tp_distance = risk_distance * 2.0
         tp_price = entry + tp_distance if side == "buy" else entry - tp_distance
         tp_price = round(tp_price, 1)
-        safe_create_order(
-            client,
-            symbol=symbol,
-            type='limit',
-            side='sell' if side == 'buy' else 'buy',
-            amount=size,
-            price=tp_price,
+        client.create_order(
+            symbol=symbol, type='limit', side='sell' if side == 'buy' else 'buy',
+            amount=size, price=tp_price,
             params={'reduceOnly': True, 'tdMode': 'isolated', 'posSide': 'net'}
         )
         logger.info(f"✅ Take-Profit: {tp_price:.1f}")
@@ -184,7 +110,7 @@ def rebalance_grid():
         return
 
     try:
-        m1_data = safe_fetch_ohlcv(client, SYMBOL, '1m', limit=5)
+        m1_data = client.fetch_ohlcv(SYMBOL, '1m', limit=5)
         bar_low = min(candle[3] for candle in m1_data)
         bar_high = max(candle[2] for candle in m1_data)
         current_volatility = (bar_high - bar_low) / price
@@ -206,14 +132,20 @@ def rebalance_grid():
         trend_confirmation = 0
 
     confirmed_trend = trend_confirmation >= 2 and current_trend is not None
-
     current_positions = get_positions(client, SYMBOL)
     
     if current_positions:
         position_side = current_positions['side']
         position_entry = current_positions['entry']
-        stop_level = stop_voron(position_entry, indicators['atr'], position_side)
-        if should_exit_voron(price, stop_level, position_side, 0.001, bar_low, bar_high):
+        stop_level = stop_voron.calculate_stop(
+            entry=position_entry,
+            atr=indicators['atr'],
+            side=position_side,
+            current_price=price,
+            volatility_ratio=indicators['atr'] / price,
+            market_regime="trending" if confirmed_trend else "normal"
+        )
+        if stop_voron.check_exit(price, stop_level, position_side, bar_low, bar_high):
             logger.info("🔴 Сработал Stop-Loss по защите от гэпа")
             close_all_positions(client, SYMBOL)
             current_positions = get_positions(client, SYMBOL)
@@ -222,20 +154,25 @@ def rebalance_grid():
         volatility_threshold = 0.03
         if current_volatility < volatility_threshold:
             if not current_positions:
-                stop_price = stop_voron(price, indicators['atr'], current_trend, k=2.0)
+                stop_price = stop_voron.calculate_stop(
+                    entry=price,
+                    atr=indicators['atr'],
+                    side=current_trend,
+                    current_price=price,
+                    volatility_ratio=indicators['atr'] / price,
+                    market_regime="trending"
+                )
                 size = compute_position_size(price, stop_price, TREND_CAPITAL)
                 if size > 0:
                     try:
-                        safe_create_order(
-                            client,
+                        client.create_order(
                             symbol=SYMBOL,
                             type='market',
                             side=current_trend,
                             amount=size,
                             params={'tdMode': 'isolated', 'posSide': 'net'}
                         )
-                        safe_create_order(
-                            client,
+                        client.create_order(
                             symbol=SYMBOL,
                             type='trigger',
                             side='sell' if current_trend == 'buy' else 'buy',
@@ -248,11 +185,9 @@ def rebalance_grid():
                     except Exception as e:
                         logger.error(f"Ошибка открытия трендовой позиции: {e}")
             
-            # 1. В бычьем тренде
             if current_trend == "buy":
                 cancel_all_orders(client, SYMBOL)
                 place_grid_orders(client, SYMBOL, GRID_CAPITAL, upper_pct=15.0, lower_pct=3.0)
-            # 2. В медвежьем тренде
             else:
                 cancel_all_orders(client, SYMBOL)
                 place_grid_orders(client, SYMBOL, GRID_CAPITAL, upper_pct=3.0, lower_pct=15.0)
@@ -260,7 +195,6 @@ def rebalance_grid():
         else:
             if current_positions:
                 close_all_positions(client, SYMBOL)
-            # 3. В боковике с высокой волатильностью
             cancel_all_orders(client, SYMBOL)
             current_atr_pct = indicators['atr'] / indicators['price'] * 100
             dynamic_range = max(12.0, min(20.0, current_atr_pct * 1.5))
@@ -269,7 +203,6 @@ def rebalance_grid():
     else:
         if current_positions:
             close_all_positions(client, SYMBOL)
-        # 4. В боковике без тренда
         cancel_all_orders(client, SYMBOL)
         current_atr_pct = indicators['atr'] / indicators['price'] * 100
         dynamic_range = max(12.0, min(20.0, current_atr_pct * 1.5))
