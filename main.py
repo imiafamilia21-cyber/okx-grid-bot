@@ -13,7 +13,7 @@ import os
 # ------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbwph5qJPcUmcKadckHeCpzZkDX5CZH8G9B4p7sysDN_uFixhs5GyHfJh39wnsZlbXru/exec"
+GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbxUdwfnx0g5gJekQ54oHhmB2eciFldGuH_ct8fav-d5wfilf4asVA2kYOBG35Nuwzig/exec"
 
 # ------------------------------
 # ЛОГИРОВАНИЕ
