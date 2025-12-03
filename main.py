@@ -69,8 +69,18 @@ def rebalance_grid():
     # отправка в Telegram
     send_telegram(msg)
 
-    # запись в Google Sheets
-    send_to_sheets({"data": msg, "sheetName": "Лист1"})
+    # запись в Google Sheets (формат под твой doPost)
+    payload = {
+        "type": "rebalance",
+        "symbol": "BTC-USDT-SWAP",
+        "side": "N/A",
+        "size": "N/A",
+        "entry_price": price,
+        "exit_price": "",
+        "pnl": "",
+        "total_pnl": ""
+    }
+    send_to_sheets(payload)
 
 # ------------------------------
 # FLASK СЕРВЕР ДЛЯ HEALTHCHECK
