@@ -3,3 +3,4 @@ requests==2.31.0
 flask==3.0.0
 tenacity==8.2.3
 python-dotenv
+flask-limiter==3.5.0
