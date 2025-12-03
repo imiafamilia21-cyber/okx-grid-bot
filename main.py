@@ -13,7 +13,7 @@ import os
 # ------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbxUdwfnx0g5gJekQ54oHhmB2eciFldGuH_ct8fav-d5wfilf4asVA2kYOBG35Nuwzig/exec"
+GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyJENok5yfB9rOY85FjkZ85oKzV0v5bwZEGfP0HhX8AAtT8f9LAbI71qLmXPnQqrA6t/exec"
 
 # ------------------------------
 # ЛОГИРОВАНИЕ
@@ -52,68 +52,4 @@ def send_to_sheets(data: dict):
     try:
         resp = requests.post(GOOGLE_SHEETS_URL, json=data, timeout=10)
         if resp.status_code == 200:
-            logger.info("✅ Запись в Google Sheets выполнена")
-        else:
-            logger.error(f"❌ Sheets: код {resp.status_code}, ответ: {resp.text}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка запроса к Sheets: {e}")
-
-# ------------------------------
-# ОСНОВНАЯ ЛОГИКА
-# ------------------------------
-def rebalance_grid():
-    # пример получения цены — замени на реальную логику
-    price = 93208.8
-    msg = f"Ребаланс {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Цена {price}"
-
-    # отправка в Telegram
-    send_telegram(msg)
-
-    # запись в Google Sheets (формат под твой doPost)
-    payload = {
-        "type": "rebalance",
-        "symbol": "BTC-USDT-SWAP",
-        "side": "N/A",
-        "size": "N/A",
-        "entry_price": price,
-        "exit_price": "",
-        "pnl": "",
-        "total_pnl": ""
-    }
-    send_to_sheets(payload)
-
-# ------------------------------
-# FLASK СЕРВЕР ДЛЯ HEALTHCHECK
-# ------------------------------
-app = Flask(__name__)
-limiter = Limiter(get_remote_address, app=app, default_limits=["60 per minute"])
-
-@app.route('/health', methods=["GET", "HEAD"])
-@limiter.limit("20 per minute")
-def health():
-    return "OK", 200
-
-def run_flask():
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, debug=False)
-
-# ------------------------------
-# ЗАПУСК
-# ------------------------------
-if __name__ == "__main__":
-    logger.info(f"🚀 Запуск бота | Капитал: 120.0 USDT")
-    logger.info(f"📊 Сетка: 84.0 USDT | Тренд: 36.0 USDT")
-
-    threading.Thread(target=run_flask, daemon=True).start()
-
-    last_rebalance_hour_bucket = None
-    while True:
-        now = time.time()
-        hour_bucket = int(now / 3600)
-        if last_rebalance_hour_bucket is None or hour_bucket != last_rebalance_hour_bucket:
-            try:
-                rebalance_grid()
-            except Exception as e:
-                logger.error(f"❌ Ошибка rebalance_grid: {e}")
-            last_rebalance_hour_bucket = hour_bucket
-        time.sleep(60)
+            logger.info("✅ Запись в Google Sheets
