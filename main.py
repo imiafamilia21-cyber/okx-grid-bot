@@ -1,16 +1,19 @@
 import time
 import requests
 import logging
-from datetime import datetime, date
-from okx_client import get_okx_demo_client
-from strategy import fetch_ohlcv, calculate_ema_rsi_atr, is_trending, cancel_all_orders, place_grid_orders
-from config import SYMBOL, REBALANCE_INTERVAL_HOURS, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
-from StopVoronPro import StopVoronPro
+from datetime import datetime
 from flask import Flask
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import threading
 import os
+
+# ------------------------------
+# КОНФИГ
+# ------------------------------
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbwph5qJPcUmcKadckHeCpzZkDX5CZH8G9B4p7sysDN_uFixhs5GyHfJh39wnsZlbXru/exec"
 
 # ------------------------------
 # ЛОГИРОВАНИЕ
@@ -43,20 +46,31 @@ def send_telegram(text: str):
         logger.error(f"❌ Ошибка запроса к Telegram: {e}")
 
 # ------------------------------
-# ОСНОВНАЯ ЛОГИКА (сокращённо)
+# GOOGLE SHEETS
+# ------------------------------
+def send_to_sheets(data: dict):
+    try:
+        resp = requests.post(GOOGLE_SHEETS_URL, json=data, timeout=10)
+        if resp.status_code == 200:
+            logger.info("✅ Запись в Google Sheets выполнена")
+        else:
+            logger.error(f"❌ Sheets: код {resp.status_code}, ответ: {resp.text}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка запроса к Sheets: {e}")
+
+# ------------------------------
+# ОСНОВНАЯ ЛОГИКА
 # ------------------------------
 def rebalance_grid():
-    client = get_okx_demo_client()
-    try:
-        ticker = client.fetch_ticker(SYMBOL)
-        price = ticker['last']
-        logger.info(f"Цена {SYMBOL}: {price}")
-    except Exception as e:
-        logger.error(f"Ошибка получения цены: {e}")
-        return
+    # пример получения цены — замени на реальную логику
+    price = 93208.8
+    msg = f"Ребаланс {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Цена {price}"
 
-    # Здесь твоя торговая логика...
-    send_telegram(f"Ребаланс выполнен, цена {price}")
+    # отправка в Telegram
+    send_telegram(msg)
+
+    # запись в Google Sheets
+    send_to_sheets({"data": msg, "sheetName": "Лист1"})
 
 # ------------------------------
 # FLASK СЕРВЕР ДЛЯ HEALTHCHECK
