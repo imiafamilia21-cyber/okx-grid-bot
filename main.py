@@ -13,7 +13,7 @@ import os
 # ------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbyJENok5yfB9rOY85FjkZ85oKzV0v5bwZEGfP0HhX8AAtT8f9LAbI71qLmXPnQqrA6t/exec"
+GOOGLE_SHEETS_URL = "https://script.google.com/macros/s/AKfycbx.../exec"  # <-- сюда правильный WebApp URL
 
 # ------------------------------
 # ЛОГИРОВАНИЕ
@@ -62,14 +62,11 @@ def send_to_sheets(data: dict):
 # ОСНОВНАЯ ЛОГИКА
 # ------------------------------
 def rebalance_grid():
-    # пример получения цены — замени на реальную логику
     price = 93208.8
     msg = f"Ребаланс {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Цена {price}"
 
-    # отправка в Telegram
     send_telegram(msg)
 
-    # запись в Google Sheets (строго по нужным полям)
     payload = {
         "timestamp": datetime.now().isoformat(),
         "type": "rebalance",
@@ -90,9 +87,8 @@ app = Flask(__name__)
 limiter = Limiter(get_remote_address, app=app, default_limits=["60 per minute"])
 
 @app.route('/health', methods=["GET", "HEAD"])
-@limiter.limit("20 per minute")
+@limiter.exempt
 def health():
-    # Возвращаем JSON с телом, чтобы cron-job.org видел содержимое
     return jsonify({"status": "OK", "service": "okx-grid-bot"}), 200
 
 def run_flask():
