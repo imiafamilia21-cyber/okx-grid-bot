@@ -2,7 +2,7 @@ import time
 import requests
 import logging
 from datetime import datetime
-from flask import Flask
+from flask import Flask, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import threading
@@ -69,8 +69,9 @@ def rebalance_grid():
     # отправка в Telegram
     send_telegram(msg)
 
-    # запись в Google Sheets (формат под твой doPost)
+    # запись в Google Sheets (строго по нужным полям)
     payload = {
+        "timestamp": datetime.now().isoformat(),
         "type": "rebalance",
         "symbol": "BTC-USDT-SWAP",
         "side": "N/A",
@@ -91,7 +92,8 @@ limiter = Limiter(get_remote_address, app=app, default_limits=["60 per minute"])
 @app.route('/health', methods=["GET", "HEAD"])
 @limiter.limit("20 per minute")
 def health():
-    return "OK", 200
+    # Возвращаем JSON с телом, чтобы cron-job.org видел содержимое
+    return jsonify({"status": "OK", "service": "okx-grid-bot"}), 200
 
 def run_flask():
     port = int(os.environ.get('PORT', 10000))
