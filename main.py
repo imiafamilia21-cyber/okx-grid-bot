@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, date
 from okx_client import get_okx_demo_client
 from strategy import fetch_ohlcv, calculate_ema_rsi_atr, is_trending, cancel_all_orders, place_grid_orders
-from config import SYMBOL, REBALANCE_INTERVAL_HOURS, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from config import SYMBOL, REBALANCE_INTERVAL_HOURS, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, GAS_WEBHOOK_URL
 from StopVoronPro import StopVoronPro
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', handlers=[logging.StreamHandler()])
@@ -39,8 +39,21 @@ def send_telegram(text):
             logger.info("✅ Сообщение отправлено в Telegram")
             return
         except Exception as e:
-            logger.error(f"Ошибка отправки в Telegram: {e}")
+            logger.error(f"❌ Ошибка Telegram: {e}")
             time.sleep(2)
+
+def log_to_sheet(data):
+    """Отправка данных в Google Sheets"""
+    try:
+        if not GAS_WEBHOOK_URL:
+            return
+        response = requests.post(GAS_WEBHOOK_URL, json=data, timeout=10)
+        if response.status_code == 200:
+            logger.info("✅ Запись в Google Sheets")
+        else:
+            logger.error(f"❌ Sheets: {response.status_code} {response.text}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка Sheets: {e}")
 
 def get_positions(client, symbol):
     try:
@@ -63,11 +76,29 @@ def close_all_positions(client, symbol):
             if p.get('contracts', 0) > 0:
                 side = 'buy' if p['side'] == 'short' else 'sell'
                 size = p['contracts']
-                client.create_order(symbol=symbol, type='market', side=side, amount=size,
-                                    params={'tdMode': 'isolated', 'posSide': 'net', 'reduceOnly': True})
-                send_telegram(f"🔴 Закрыта позиция {p['side']} {symbol} size={size} entry={p['entryPrice']} pnl={p.get('unrealizedPnl',0):+.2f}")
+                client.create_order(
+                    symbol=symbol,
+                    type='market',
+                    side=side,
+                    amount=size,
+                    params={'tdMode': 'isolated', 'posSide': 'net', 'reduceOnly': True}
+                )
+                msg = f"🔴 Закрыта позиция {p['side']} {symbol} size={size} entry={p['entryPrice']} pnl={p.get('unrealizedPnl',0):+.2f}"
+                send_telegram(msg)
+                log_to_sheet({
+                    'timestamp': datetime.now().isoformat(),
+                    'type': 'close_position',
+                    'symbol': SYMBOL,
+                    'side': p['side'],
+                    'size': size,
+                    'entry_price': p['entryPrice'],
+                    'exit_price': client.fetch_ticker(SYMBOL)['last'],
+                    'pnl': p.get('unrealizedPnl', 0),
+                    'total_pnl': total_pnl,
+                    'message': msg
+                })
     except Exception as e:
-        logger.error(f"Ошибка закрытия позиции: {e}")
+        logger.error(f"❌ Ошибка закрытия: {e}")
 
 def compute_position_size(entry: float, stop: float, capital: float, max_exposure_pct: float = 0.3) -> float:
     risk_usd = capital * RISK_PER_TRADE
@@ -86,29 +117,17 @@ def place_take_profit(client, symbol, side, entry, stop, size):
         tp_price = entry + tp_distance if side == "buy" else entry - tp_distance
         tp_price = round(tp_price, 1)
         client.create_order(
-            symbol=symbol, type='limit', side='sell' if side == 'buy' else 'buy',
-            amount=size, price=tp_price,
+            symbol=symbol,
+            type='limit',
+            side='sell' if side == 'buy' else 'buy',
+            amount=size,
+            price=tp_price,
             params={'reduceOnly': True, 'tdMode': 'isolated', 'posSide': 'net'}
         )
-        send_telegram(f"✅ Take-Profit установлен\n{symbol} {side.upper()}\nЦель: {tp_price}\nРазмер: {size:.4f} BTC")
+        msg = f"✅ Take-Profit установлен\n{symbol} {side.upper()}\nЦель: {tp_price}\nРазмер: {size:.4f} BTC"
+        send_telegram(msg)
     except Exception as e:
         logger.error(f"❌ Ошибка Take-Profit: {e}")
-
-def log_grid_order(client, symbol, side, price, size):
-    """Логирование каждого ордера сетки"""
-    send_telegram(f"📊 Ордер сетки\n{symbol} {side.upper()}\nЦена: {price:.1f}\nРазмер: {size:.4f} BTC")
-
-def place_grid_orders_with_logging(client, symbol, capital_usdt, grid_range_pct=18.0, grid_levels=5, upper_pct=None, lower_pct=None):
-    """Сетка с логированием каждого ордера"""
-    from strategy import place_grid_orders
-    place_grid_orders(client, symbol, capital_usdt, grid_range_pct, grid_levels, upper_pct, lower_pct)
-    # Логируем по факту — берем последние ордера
-    try:
-        orders = client.fetch_open_orders(symbol)
-        for order in orders[-grid_levels*2:]:
-            log_grid_order(client, symbol, order['side'], order['price'], order['amount'])
-    except:
-        pass
 
 def should_rebalance_grid(current_price: float, grid_center: float, grid_range_pct: float) -> bool:
     if grid_center is None:
@@ -125,7 +144,7 @@ def rebalance_grid():
         ticker = client.fetch_ticker(SYMBOL)
         price = ticker['last']
     except Exception as e:
-        logger.error(f"Ошибка получения цены: {e}")
+        logger.error(f"❌ Ошибка цены: {e}")
         return
 
     try:
@@ -167,6 +186,18 @@ def rebalance_grid():
         if stop_voron.check_exit(price, stop_level, position_side, bar_low, bar_high):
             logger.info("🔴 Сработал Stop-Loss по защите от гэпа")
             send_telegram(f"🔴 Stop-Loss\n{SYMBOL} {position_side.upper()}\nВход: {position_entry:.1f}\nСтоп: {stop_level:.1f}\nТекущая: {price:.1f}")
+            log_to_sheet({
+                'timestamp': datetime.now().isoformat(),
+                'type': 'stop_loss',
+                'symbol': SYMBOL,
+                'side': position_side,
+                'size': current_positions['size'],
+                'entry_price': position_entry,
+                'exit_price': price,
+                'pnl': current_positions.get('unrealizedPnl', 0),
+                'total_pnl': total_pnl,
+                'message': f"Stop-Loss по защите от гэпа"
+            })
             close_all_positions(client, SYMBOL)
             current_positions = get_positions(client, SYMBOL)
 
@@ -192,7 +223,20 @@ def rebalance_grid():
                             amount=size,
                             params={'tdMode': 'isolated', 'posSide': 'net'}
                         )
-                        send_telegram(f"📲 Вход в сделку\n{SYMBOL} {current_trend.upper()}\nВход: {price:.1f}\nСтоп: {stop_price:.1f}\nРазмер: {size:.4f} BTC")
+                        msg = f"📲 Вход в сделку\n{SYMBOL} {current_trend.upper()}\nВход: {price:.1f}\nСтоп: {stop_price:.1f}\nРазмер: {size:.4f} BTC"
+                        send_telegram(msg)
+                        log_to_sheet({
+                            'timestamp': datetime.now().isoformat(),
+                            'type': 'open_position',
+                            'symbol': SYMBOL,
+                            'side': current_trend,
+                            'size': size,
+                            'entry_price': price,
+                            'exit_price': '',
+                            'pnl': '',
+                            'total_pnl': total_pnl,
+                            'message': msg
+                        })
                         client.create_order(
                             symbol=SYMBOL,
                             type='trigger',
@@ -203,31 +247,48 @@ def rebalance_grid():
                         )
                         place_take_profit(client, SYMBOL, current_trend, price, stop_price, size)
                     except Exception as e:
-                        logger.error(f"Ошибка открытия трендовой позиции: {e}")
+                        logger.error(f"❌ Ошибка открытия: {e}")
+                        send_telegram(f"❌ Ошибка открытия: {e}")
             
             if current_trend == "buy":
                 cancel_all_orders(client, SYMBOL)
-                place_grid_orders_with_logging(client, SYMBOL, GRID_CAPITAL, upper_pct=15.0, lower_pct=3.0)
+                place_grid_orders(client, SYMBOL, GRID_CAPITAL, upper_pct=15.0, lower_pct=3.0)
             else:
                 cancel_all_orders(client, SYMBOL)
-                place_grid_orders_with_logging(client, SYMBOL, GRID_CAPITAL, upper_pct=3.0, lower_pct=15.0)
+                place_grid_orders(client, SYMBOL, GRID_CAPITAL, upper_pct=3.0, lower_pct=15.0)
             grid_center = price
         else:
             if current_positions:
                 close_all_positions(client, SYMBOL)
             cancel_all_orders(client, SYMBOL)
             current_atr_pct = indicators['atr'] / indicators['price'] * 100
-            dynamic_range = max(12.0, min(20.0, current_atr_pct * 1.5))
-            place_grid_orders_with_logging(client, SYMBOL, INITIAL_CAPITAL, grid_range_pct=dynamic_range)
+            dynamic_range = max(8.0, min(15.0, current_atr_pct * 1.2))
+            place_grid_orders(client, SYMBOL, INITIAL_CAPITAL, grid_range_pct=dynamic_range)
             grid_center = price
     else:
         if current_positions:
             close_all_positions(client, SYMBOL)
         cancel_all_orders(client, SYMBOL)
         current_atr_pct = indicators['atr'] / indicators['price'] * 100
-        dynamic_range = max(12.0, min(20.0, current_atr_pct * 1.5))
-        place_grid_orders_with_logging(client, SYMBOL, INITIAL_CAPITAL, grid_range_pct=dynamic_range)
+        dynamic_range = max(8.0, min(15.0, current_atr_pct * 1.2))
+        place_grid_orders(client, SYMBOL, INITIAL_CAPITAL, grid_range_pct=dynamic_range)
         grid_center = price
+
+    # Событие ребалансировки
+    msg = f"🔄 Ребаланс {datetime.now().strftime('%Y-%m-%d %H:%M')}\nЦена: {price}"
+    send_telegram(msg)
+    log_to_sheet({
+        'timestamp': datetime.now().isoformat(),
+        'type': 'rebalance',
+        'symbol': SYMBOL,
+        'side': current_positions.get('side', ''),
+        'size': current_positions.get('size', ''),
+        'entry_price': '',
+        'exit_price': '',
+        'pnl': current_positions.get('unrealizedPnl', 0),
+        'total_pnl': total_pnl,
+        'message': msg
+    })
 
     # Обновление статистики
     if current_positions != last_positions:
@@ -245,15 +306,27 @@ def rebalance_grid():
             if drawdown > max_drawdown:
                 max_drawdown = drawdown
                 
-            # 📲 Выход из сделки
             side = last_positions['side']
             size = last_positions['size']
             entry = last_positions['entry']
-            send_telegram(f"📲 Выход из сделки\n{SYMBOL} {side.upper()}\nВход: {entry:.1f}\nВыход: ~{price:.1f}\nPnL: {pnl:+.2f} USDT\nИтого: {total_pnl:+.2f} USDT")
+            msg = f"📲 Выход из сделки\n{SYMBOL} {side.upper()}\nВход: {entry:.1f}\nВыход: ~{price:.1f}\nPnL: {pnl:+.2f} USDT\nИтого: {total_pnl:+.2f} USDT"
+            send_telegram(msg)
+            log_to_sheet({
+                'timestamp': datetime.now().isoformat(),
+                'type': 'close_position',
+                'symbol': SYMBOL,
+                'side': side,
+                'size': size,
+                'entry_price': entry,
+                'exit_price': price,
+                'pnl': pnl,
+                'total_pnl': total_pnl,
+                'message': msg
+            })
             
         last_positions = current_positions.copy() if current_positions else {}
 
-    # 📈 Ежедневный отчёт
+    # Ежедневный отчёт
     today = date.today()
     if today != last_report_date:
         win_rate = round(winning_trades / total_trades * 100, 1) if total_trades > 0 else 0.0
@@ -264,6 +337,18 @@ def rebalance_grid():
                  f"Win Rate: {win_rate}%\n"
                  f"Макс. просадка: {max_drawdown:.2f}%")
         send_telegram(report)
+        log_to_sheet({
+            'timestamp': datetime.now().isoformat(),
+            'type': 'daily_report',
+            'symbol': SYMBOL,
+            'side': '',
+            'size': '',
+            'entry_price': '',
+            'exit_price': '',
+            'pnl': '',
+            'total_pnl': total_pnl,
+            'message': report
+        })
         last_report_date = today
 
 from flask import Flask
