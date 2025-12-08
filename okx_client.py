@@ -1,5 +1,5 @@
 import ccxt
-from config import API_KEY, SECRET_KEY, PASSPHRASE
+from config import API_KEY, API_SECRET, API_PASSPHRASE
 
 def get_okx_demo_client():
     exchange = ccxt.okx({
