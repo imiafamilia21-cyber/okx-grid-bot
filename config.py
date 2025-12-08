@@ -1,3 +1,4 @@
+import os
 # ---------- OKX ----------
 API_KEY        = os.getenv("OKX_API_KEY")
 API_SECRET     = os.getenv("OKX_SECRET")
