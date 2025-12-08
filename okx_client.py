@@ -1,13 +1,11 @@
-import ccxt
-from config import API_KEY, API_SECRET, API_PASSPHRASE
+import os
+from ccxt import okx
 
 def get_okx_demo_client():
-    exchange = ccxt.okx({
-        'apiKey': API_KEY,
-        'secret': SECRET_KEY,
-        'password': PASSPHRASE,
-        'options': {'defaultType': 'swap'},
-        'hostname': 'www.okx.com',
+    return okx({
+        'apiKey': os.getenv("OKX_API_KEY"),
+        'secret': os.getenv("OKX_SECRET"),
+        'password': os.getenv("OKX_PASS"),
+        'sandbox': True,
+        'options': {'defaultType': 'swap'}
     })
-    exchange.set_sandbox_mode(True)
-    return exchange
