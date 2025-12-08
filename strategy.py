@@ -1,102 +1,119 @@
+import logging, os, requests, json
 from okx_client import get_okx_demo_client
-from config import SYMBOL, GRID_RANGE_PCT, GRID_LEVELS
+from config import SYMBOL
+logger = logging.getLogger("strategy")
 
-def fetch_ohlcv(client, symbol, timeframe='15m', limit=100):
-    return client.fetch_ohlcv(symbol, timeframe, limit=limit)
+# ---------- 1. fetch ----------
+def fetch_ohlcv(client, symbol=SYMBOL, timeframe="15m", limit=100):
+    try:
+        return client.fetch_ohlcv(symbol, timeframe, limit=limit)
+    except Exception as e:
+        logger.error(f"fetch_ohlcv: {e}")
+        return []
 
-def calculate_ema_rsi_atr(ohlcv, ema_period=50, rsi_period=14, atr_period=14):
-    closes = [candle[4] for candle in ohlcv]
-    highs = [candle[2] for candle in ohlcv]
-    lows = [candle[3] for candle in ohlcv]
-    
-    # EMA
+# ---------- 2. indicators ----------
+def calculate_ema_rsi_atr(ohlcv, ema_p=50, rsi_p=14, atr_p=14):
+    closes = [c[4] for c in ohlcv]
+    highs  = [c[2] for c in ohlcv]
+    lows   = [c[3] for c in ohlcv]
+
     ema = closes[-1]
-    multiplier = 2 / (ema_period + 1)
+    mult = 2 / (ema_p + 1)
     for i in range(len(closes)-2, -1, -1):
-        ema = closes[i] * multiplier + ema * (1 - multiplier)
-    
-    # RSI
-    deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
-    gains = [d for d in deltas if d > 0]
-    losses = [-d for d in deltas if d < 0]
-    avg_gain = sum(gains[-rsi_period:]) / rsi_period if gains else 0
-    avg_loss = sum(losses[-rsi_period:]) / rsi_period if losses else 0
-    rs = avg_gain / avg_loss if avg_loss else 0
-    rsi = 100 - (100 / (1 + rs)) if rs else 50
-    
-    # ATR
+        ema = closes[i]*mult + ema*(1-mult)
+
+    deltas = [closes[i]-closes[i-1] for i in range(1, len(closes))]
+    gains  = [d for d in deltas if d>0]
+    losses = [-d for d in deltas if d<0]
+    avg_gain = sum(gains[-rsi_p:])/rsi_p if gains else 0
+    avg_loss = sum(losses[-rsi_p:])/rsi_p if losses else 0
+    rs = avg_gain/avg_loss if avg_loss else 0
+    rsi = 100 - (100/(1+rs)) if rs else 50
+
     tr_list = []
     for i in range(1, len(closes)):
-        tr1 = highs[i] - lows[i]
-        tr2 = abs(highs[i] - closes[i-1])
-        tr3 = abs(lows[i] - closes[i-1])
-        tr_list.append(max(tr1, tr2, tr3))
-    atr = sum(tr_list[-atr_period:]) / atr_period if tr_list else 0
-    
-    return {
-        'price': closes[-1],
-        'ema': ema,
-        'rsi': rsi,
-        'atr': atr
-    }
+        tr = max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+        tr_list.append(tr)
+    atr = sum(tr_list[-atr_p:])/atr_p if tr_list else 0
+    atr_prev = sum(tr_list[-atr_p-1:-1])/atr_p if len(tr_list)>atr_p else atr*0.95
 
+    # 3. адаптивный мин ATR
+    sigma7 = (sum([(closes[-i]-closes[-i-1])**2 for i in range(1,8)])/7)**0.5 / closes[-1]
+    min_atr = max(MIN_ATR_BASE - MIN_ATR_RANGE + sigma7*2, 0.0025)
+
+    return {"price": closes[-1], "ema": ema, "rsi": rsi, "atr": atr,
+            "atr_prev": atr_prev, "sigma7": sigma7, "min_atr_pct": min_atr}
+
+# ---------- 3. trend ----------
 def is_trending(data):
-    price = data['price']
-    ema = data['ema']
-    rsi = data['rsi']
-    atr = data['atr']
-    atr_prev = data.get('atr_prev', atr * 0.95)
-    atr_increasing = atr > atr_prev * 1.05
-    if price > ema and rsi > 55 and atr_increasing:
-        return True, 'buy'
-    elif price < ema and rsi < 45 and atr_increasing:
-        return True, 'sell'
-    else:
-        return False, None
+    price = data["price"]
+    ema   = data["ema"]
+    rsi   = data["rsi"]
+    atr   = data["atr"]
+    atr_prev = data["atr_prev"]
+    atr_up = atr > atr_prev*1.05
+    if price>ema and rsi>50 and atr_up:
+        return True, "buy"
+    if price<ema and rsi<50 and atr_up:
+        return True, "sell"
+    return False, None
 
-def cancel_all_orders(client, symbol):
+# ---------- 4. volume filter ----------
+def volume_filter(client, symbol=SYMBOL):
     try:
-        orders = client.fetch_open_orders(symbol)
-        for order in orders:
-            try:
-                client.cancel_order(order['id'], symbol)
-            except:
-                pass
+        ticker = client.fetch_ticker(symbol)
+        vol24 = float(ticker["quoteVolume"])
+        ohlcv7 = client.fetch_ohlcv(symbol, "1d", limit=7)
+        avg7 = sum([c[5] for c in ohlcv7])/7
+        return vol24 >= avg7*0.9
+    except:
+        return False
+
+# ---------- 5. 2-дневный тренд ----------
+def ema21_2days(client, symbol=SYMBOL):
+    try:
+        ohlcv = client.fetch_ohlcv(symbol, "1d", limit=3)
+        closes = [c[4] for c in ohlcv[-2:]]
+        ema21  = sum(closes)/2          # упрощённо
+        return closes[-1] > ema21
+    except:
+        return False
+
+# ---------- 6. orders ----------
+def cancel_all_orders(client, symbol=SYMBOL):
+    try:
+        for o in client.fetch_open_orders(symbol):
+            client.cancel_order(o["id"], symbol)
     except:
         pass
 
-def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=None):
+def place_grid_orders(client, symbol=SYMBOL, capital=84, levels=5,
+                      upper_pct=None, lower_pct=None):
     ticker = client.fetch_ticker(symbol)
-    price = ticker['last']
-    min_size = 0.01
+    price  = ticker["last"]
+    min_sz = 0.01
 
     if upper_pct is not None and lower_pct is not None:
-        upper = price * (1 + upper_pct / 100)
-        lower = price * (1 - lower_pct / 100)
-        center = (upper + lower) / 2
-        grid_levels = 6
-        step = (upper - lower) / (grid_levels * 2)
+        upper = price * (1 + upper_pct/100)
+        lower = price * (1 - lower_pct/100)
+        center = (upper+lower)/2
     else:
-        grid_range_pct = 12.0
-        lower = price * (1 - grid_range_pct / 100)
-        upper = price * (1 + grid_range_pct / 100)
+        rng = 18.0/100
+        upper = price*(1+rng)
+        lower = price*(1-rng)
         center = price
-        grid_levels = 6
-        step = (upper - lower) / (grid_levels * 2)
 
-    amount_per_level = capital_usdt / (grid_levels * 2)
+    step = (upper-lower)/(levels*2)
+    amt  = capital/(levels*2)
 
-    for i in range(1, grid_levels + 1):
-        buy_price = center - i * step
-        buy_size = max(amount_per_level / buy_price, min_size)
+    cancel_all_orders(client, symbol)
+    for i in range(1, levels+1):
+        buy_p = center - i*step
+        sell_p = center + i*step
+        buy_sz  = max(amt/buy_p, min_sz)
+        sell_sz = max(amt/sell_p, min_sz)
         try:
-            client.create_order(symbol=symbol, type='limit', side='buy', amount=buy_size, price=buy_price, params={'tdMode': 'cash', 'posSide': 'net'})
-        except Exception:
-            pass
-        
-        sell_price = center + i * step
-        sell_size = max(amount_per_level / sell_price, min_size)
-        try:
-            client.create_order(symbol=symbol, type='limit', side='sell', amount=sell_size, price=sell_price, params={'tdMode': 'cash', 'posSide': 'net'})
-        except Exception:
+            client.create_order(symbol, "limit", "buy",  buy_sz,  buy_p,  params={"tdMode":"cash","posSide":"net"})
+            client.create_order(symbol, "limit", "sell", sell_sz, sell_p, params={"tdMode":"cash","posSide":"net"})
+        except:
             pass
