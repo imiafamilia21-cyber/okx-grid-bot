@@ -203,7 +203,6 @@ def rebalance_grid():
                         )
                         place_take_profit(client, SYMBOL, current_trend, price, stop_price, size)
                     except Exception as e:
-<<<<<<< HEAD
                         logger.error(f"❌ Ошибка открытия позиции: {e}")
                         send_telegram(f"❌ Ошибка открытия: {e}")
             
@@ -213,7 +212,6 @@ def rebalance_grid():
             else:
                 cancel_all_orders(client, SYMBOL)
                 place_grid_orders(client, SYMBOL, GRID_CAPITAL, upper_pct=3.0, lower_pct=15.0)
-=======
                         logger.error(f"Ошибка открытия трендовой позиции: {e}")
             
             if current_trend == "buy":
@@ -222,33 +220,26 @@ def rebalance_grid():
             else:
                 cancel_all_orders(client, SYMBOL)
                 place_grid_orders_with_logging(client, SYMBOL, GRID_CAPITAL, upper_pct=3.0, lower_pct=15.0)
->>>>>>> 59205ca (Full Telegram notifications implemented)
             grid_center = price
         else:
             if current_positions:
                 close_all_positions(client, SYMBOL)
             cancel_all_orders(client, SYMBOL)
             current_atr_pct = indicators['atr'] / indicators['price'] * 100
-<<<<<<< HEAD
             dynamic_range = max(8.0, min(15.0, current_atr_pct * 1.2))
             place_grid_orders(client, SYMBOL, INITIAL_CAPITAL, grid_range_pct=dynamic_range)
-=======
             dynamic_range = max(12.0, min(20.0, current_atr_pct * 1.5))
             place_grid_orders_with_logging(client, SYMBOL, INITIAL_CAPITAL, grid_range_pct=dynamic_range)
->>>>>>> 59205ca (Full Telegram notifications implemented)
             grid_center = price
     else:
         if current_positions:
             close_all_positions(client, SYMBOL)
         cancel_all_orders(client, SYMBOL)
         current_atr_pct = indicators['atr'] / indicators['price'] * 100
-<<<<<<< HEAD
         dynamic_range = max(8.0, min(15.0, current_atr_pct * 1.2))
         place_grid_orders(client, SYMBOL, INITIAL_CAPITAL, grid_range_pct=dynamic_range)
-=======
         dynamic_range = max(12.0, min(20.0, current_atr_pct * 1.5))
         place_grid_orders_with_logging(client, SYMBOL, INITIAL_CAPITAL, grid_range_pct=dynamic_range)
->>>>>>> 59205ca (Full Telegram notifications implemented)
         grid_center = price
 
     # Обновление статистики
@@ -267,10 +258,7 @@ def rebalance_grid():
             if drawdown > max_drawdown:
                 max_drawdown = drawdown
                 
-<<<<<<< HEAD
-=======
             # 📲 Выход из сделки
->>>>>>> 59205ca (Full Telegram notifications implemented)
             side = last_positions['side']
             size = last_positions['size']
             entry = last_positions['entry']
@@ -278,11 +266,8 @@ def rebalance_grid():
             
         last_positions = current_positions.copy() if current_positions else {}
 
-<<<<<<< HEAD
     # Ежедневный отчёт
-=======
     # 📈 Ежедневный отчёт
->>>>>>> 59205ca (Full Telegram notifications implemented)
     today = date.today()
     if today != last_report_date:
         win_rate = round(winning_trades / total_trades * 100, 1) if total_trades > 0 else 0.0
@@ -320,8 +305,5 @@ if __name__ == "__main__":
         if int(now / 3600) != int(last_rebalance / 3600):
             rebalance_grid()
             last_rebalance = now
-<<<<<<< HEAD
         time.sleep(60)
-=======
         time.sleep(60)
->>>>>>> 59205ca (Full Telegram notifications implemented)
