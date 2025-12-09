@@ -2,5 +2,5 @@ ccxt==4.5.22
 requests==2.31.0
 flask==3.0.0
 tenacity==8.2.3
-python-dotenv
+python-dotenv==1.0.1
 flask-limiter==3.5.0
