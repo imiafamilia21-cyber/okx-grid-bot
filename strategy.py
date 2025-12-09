@@ -1,5 +1,5 @@
 from okx_client import get_okx_demo_client
-from config import SYMBOL
+from config import SYMBOL, GRID_RANGE_PCT, GRID_LEVELS
 
 def fetch_ohlcv(client, symbol, timeframe='15m', limit=100):
     return client.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -65,32 +65,26 @@ def cancel_all_orders(client, symbol):
     except:
         pass
 
-def place_grid_orders(client, symbol, capital_usdt, grid_range_pct=18.0, grid_levels=5, upper_pct=None, lower_pct=None):
-    """
-    Размещает сетку ордеров.
-    Если upper_pct и lower_pct заданы — создаёт асимметричную сетку.
-    Иначе — симметричную с диапазоном grid_range_pct.
-    """
+def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=None):
     ticker = client.fetch_ticker(symbol)
     price = ticker['last']
     min_size = 0.01
 
     if upper_pct is not None and lower_pct is not None:
-        # Адаптивная асимметричная сетка
         upper = price * (1 + upper_pct / 100)
         lower = price * (1 - lower_pct / 100)
         center = (upper + lower) / 2
+        grid_levels = 6
+        step = (upper - lower) / (grid_levels * 2)
     else:
-        # Симметричная сетка
+        grid_range_pct = 12.0
         lower = price * (1 - grid_range_pct / 100)
         upper = price * (1 + grid_range_pct / 100)
         center = price
+        grid_levels = 6
+        step = (upper - lower) / (grid_levels * 2)
 
-    step = (upper - lower) / (grid_levels * 2)
     amount_per_level = capital_usdt / (grid_levels * 2)
-
-    # Отменяем старые ордера (на всякий случай)
-    cancel_all_orders(client, symbol)
 
     for i in range(1, grid_levels + 1):
         buy_price = center - i * step
