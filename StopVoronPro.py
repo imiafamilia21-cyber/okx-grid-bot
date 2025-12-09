@@ -1,17 +1,17 @@
 class StopVoronPro:
     """
-    Улучшенная версия Stop Voron с адаптивными параметрами
+    Stop Voron v5 — промышленный стоп-лосс с защитой от edge cases
     """
     
     def __init__(self, 
                  base_atr_mult=2.0,
-                 min_risk_pct=0.005,     # 0.5% минимальный риск
-                 max_risk_pct=0.04,      # 4% максимальный убыток
+                 min_risk_pct=0.005,
+                 max_risk_pct=0.04,
                  trailing_enabled=True,
                  use_dynamic_atr=True,
-                 exit_mode="intrabar",   # intrabar, close, hybrid
-                 slippage_pct=0.001,     # 0.1% проскальзывание
-                 trailing_activation_mult=0.5):  # 0.5×ATR для активации трейлинга
+                 exit_mode="intrabar",
+                 slippage_pct=0.001,
+                 trailing_activation_mult=0.5):
         
         self.base_atr_mult = base_atr_mult
         self.min_risk_pct = min_risk_pct
@@ -23,30 +23,22 @@ class StopVoronPro:
         self.trailing_activation_mult = trailing_activation_mult
 
     def calculate_atr_multiplier(self, volatility_ratio, market_regime):
-        """
-        Динамический множитель ATR
-        """
         if not self.use_dynamic_atr:
             return self.base_atr_mult
             
         multiplier = self.base_atr_mult
-        if volatility_ratio > 1.5:    # Высокая волатильность
-            multiplier *= 1.3         # Шире стоп
-        elif volatility_ratio < 0.7:  # Низкая волатильность
-            multiplier *= 0.8         # Уже стоп
-            
+        if volatility_ratio > 1.5:
+            multiplier *= 1.3
+        elif volatility_ratio < 0.7:
+            multiplier *= 0.8
         if market_regime == "trending":
-            multiplier *= 0.9         # Уже в тренде
+            multiplier *= 0.9
         elif market_regime == "volatile":
-            multiplier *= 1.2         # Шире при нестабильности
-            
+            multiplier *= 1.2
         return round(multiplier, 2)
     
     def calculate_stop(self, entry, atr, side, current_price=None, 
                       volatility_ratio=1.0, market_regime="normal"):
-        """
-        Основной расчёт стопа
-        """
         if entry <= 0 or atr < 0:
             raise ValueError("Некорректные входные данные")
         
@@ -56,11 +48,11 @@ class StopVoronPro:
         if side == "long":
             stop = entry - (atr * atr_mult)
             min_stop = entry * (1 - self.min_risk_pct)
-            stop = max(stop, min_stop)  # ИСПРАВЛЕНО: max вместо min
+            stop = max(stop, min_stop)
         else:
             stop = entry + (atr * atr_mult)
             max_stop = entry * (1 + self.min_risk_pct)
-            stop = min(stop, max_stop)  # ИСПРАВЛЕНО: min вместо max
+            stop = min(stop, max_stop)
         
         # ТРЕЙЛИНГ
         if self.trailing_enabled and current_price:
@@ -83,10 +75,10 @@ class StopVoronPro:
         
         if side == "long":
             max_loss_stop = entry * (1 - max_loss_pct)
-            stop = min(stop, max_loss_stop)  # ИСПРАВЛЕНО: min вместо max
+            stop = min(stop, max_loss_stop)
         else:
             max_loss_stop = entry * (1 + max_loss_pct)
-            stop = max(stop, max_loss_stop)  # ИСПРАВЛЕНО: max вместо min
+            stop = max(stop, max_loss_stop)
         
         # ПРОСКАЛЬЗЫВАНИЕ
         if side == "long":
@@ -97,9 +89,6 @@ class StopVoronPro:
         return round(stop, 2)
     
     def check_exit(self, current_price, stop, side, bar_low=None, bar_high=None, close_price=None):
-        """
-        Проверка выхода с разными режимами
-        """
         if self.exit_mode == "intrabar":
             if side == "long":
                 return bar_low <= stop if bar_low is not None else current_price <= stop

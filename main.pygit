@@ -1,0 +1,1 @@
+print('ENV:', os.getenv('OKX_API_KEY'), os.getenv('OKX_SECRET'), os.getenv('OKX_PASS'))  add main.pygit commit -m "env debug"git push origin main

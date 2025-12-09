@@ -1,42 +1,16 @@
 import os
+from dotenv import load_dotenv
 
-# OKX API
+load_dotenv()
+
 API_KEY = os.getenv("OKX_API_KEY")
-API_SECRET = os.getenv("OKX_SECRET")
-API_PASSPHRASE = os.getenv("OKX_PASS")
-API_DEMO = True
+SECRET_KEY = os.getenv("OKX_API_SECRET")  # ← именно так
+PASSPHRASE = os.getenv("OKX_PASSPHRASE")
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
 SYMBOL = "BTC-USDT-SWAP"
-
-# Telegram
-TELEGRAM_TOKEN = os.getenv("TG_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TG_CHAT")
-
-# Google Sheets
-GAS_WEBHOOK_URL = os.getenv("GAS_URL")
-
-# Основные параметры
-INITIAL_CAPITAL = 120.0
-GRID_CAPITAL = 84.0
-TREND_CAPITAL = 36.0
-RISK_PER_TRADE = 0.006  # Снижено с 0.008
-MAX_EQUITY_PCT = 0.30
-MIN_ORDER_SIZE = 0.01
-COOLDOWN_HOURS = 6
-TIMEOUT_DAYS = 12
-TRAIL_ATR_MUL = 0.75
-
-# Динамические параметры
-VOL_THRESHOLD_MR = 0.012  # 1.2%
-MR_HIGH_VOL = 0.55
-MR_LOW_VOL = 0.65
-
-# Адаптивный ATR
-MIN_ATR_BASE = 0.0030
-MIN_ATR_RANGE = 0.0005
-
-# Асимметричная сетка
-ASYMMETRY_LEVELS = 5
-ASYMMETRY_RANGE = 30.0  # ±30%
-
-# Интервалы
+GRID_RANGE_PCT = 6.0
+GRID_LEVELS = 6
 REBALANCE_INTERVAL_HOURS = 1
