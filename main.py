@@ -27,7 +27,7 @@ file_handler.setFormatter(formatter)
 logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler])
 logger = logging.getLogger()
 
-# Принудительно сбрасываем буфер, чтобы файл создался сразу
+# Принудительный flush, чтобы файл создался сразу
 for handler in logger.handlers:
     handler.flush()
 
@@ -252,7 +252,14 @@ def rebalance_grid():
 # === 8. ЗАПУСК ===
 if __name__ == "__main__":
     logger.info("🚀 Бот запущен с логированием в /tmp/app.log и эндпоинтом /logs")
-    # Повторный flush на всякий случай
+    
+    # ЯВНАЯ ПРОВЕРКА: существует ли файл лога
+    if os.path.exists(LOG_FILE):
+        logger.info(f"✅ Файл лога подтверждён: {LOG_FILE}")
+    else:
+        logger.critical(f"❌ Файл лога НЕ СОЗДАН: {LOG_FILE}")
+    
+    # Flush всех хендлеров
     for handler in logger.handlers:
         handler.flush()
     
