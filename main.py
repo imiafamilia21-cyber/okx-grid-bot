@@ -1,37 +1,4 @@
 import time
-import subprocess
-import threading
-
-RCLONE_CONFIG = "/etc/secrets/rclone.conf"
-
-def send_logs_daily():
-    while True:
-        # считаем сколько секунд до ближайшей полуночи
-        now = time.localtime()
-        seconds_until_midnight = (
-            (24 - now.tm_hour) * 3600
-            - now.tm_min * 60
-            - now.tm_sec
-        )
-        time.sleep(seconds_until_midnight)
-
-        # запускаем rclone для копирования логов
-        subprocess.run([
-            "rclone",
-            "--config", RCLONE_CONFIG,
-            "copy",
-            "/app/logs",
-            "gdrive:/logs"
-        ])
-
-# запускаем отдельный поток для копирования логов каждый день в 00:00
-threading.Thread(target=send_logs_daily, daemon=True).start()
-
-# --- здесь идёт твой основной код бота ---
-# например:
-# if __name__ == "__main__":
-#     run_bot()
-import time
 import requests
 import logging
 import threading
@@ -41,7 +8,7 @@ from flask import Flask
 from okx_client import get_okx_demo_client
 from strategy import fetch_ohlcv, calculate_ema_rsi_atr, is_trending, cancel_all_orders, place_grid_orders
 
-# ——— Настройка логирования ———
+# ——— Логирование ———
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -52,12 +19,11 @@ logger = logging.getLogger()
 # ——— Конфигурация ———
 SYMBOL = "BTC-USDT-SWAP"
 INITIAL_CAPITAL = 120.0
-GRID_CAPITAL = 84.0     # 70% на сетку
-TREND_CAPITAL = 36.0    # 30% на тренд
-RISK_PER_TRADE = 0.005
+GRID_CAPITAL = 84.0
+TREND_CAPITAL = 36.0
+RISK_PER_TRADE = 0.005  # 0.5%
 EXPECTED_ORDERS = 12
 
-# Из config или .env
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -66,28 +32,30 @@ last_positions = {}
 last_report_date = date.today()
 daily_start_pnl = 0.0
 last_rebalance = 0
+grid_center = None
+current_trend = None
+trend_confirmation = 0
+last_flat_time = datetime.min
+position_open_time = None
+trail_stop_price = None
 
-# ——— Уведомления в Telegram ———
+# ——— Telegram ———
 def send_telegram(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("TELEGRAM_TOKEN или TELEGRAM_CHAT_ID не заданы")
+        logger.warning("Telegram credentials отсутствуют")
         return
     for _ in range(3):
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-            payload = {
-                'chat_id': TELEGRAM_CHAT_ID,
-                'text': text,
-                'parse_mode': 'HTML'
-            }
+            payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': text, 'parse_mode': 'HTML'}
             requests.post(url, data=payload, timeout=10)
-            logger.info("✅ Отправлено в Telegram")
+            logger.info("✅ Telegram отправлен")
             return
         except Exception as e:
             logger.error(f"❌ Ошибка Telegram: {e}")
             time.sleep(2)
 
-# ——— Получение текущих позиций ———
+# ——— Позиции ———
 def get_positions(client, symbol):
     try:
         positions = client.fetch_positions([symbol])
@@ -104,7 +72,7 @@ def get_positions(client, symbol):
         send_telegram(f"❌ Ошибка получения позиций: {e}")
     return {}
 
-# ——— Закрытие всех позиций ———
+# ——— Закрытие позиций ———
 def close_all_positions(client, symbol):
     try:
         positions = client.fetch_positions([symbol])
@@ -120,11 +88,9 @@ def close_all_positions(client, symbol):
                     params={'reduceOnly': True, 'tdMode': 'isolated', 'posSide': 'net'}
                 )
                 msg = (
-                    f"🔴 Закрыта позиция\n"
-                    f"{symbol} {p['side'].upper()}\n"
-                    f"Размер: {size:.4f} BTC\n"
-                    f"Вход: {p['entryPrice']:.1f}\n"
-                    f"PnL: {p.get('unrealizedPnl', 0):+.2f} USDT"
+                    f"🔴 Закрыта позиция ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
+                    f"{p['side'].upper()} {size:.4f} BTC\n"
+                    f"Вход: {p['entryPrice']:.1f} → PnL: {p.get('unrealizedPnl', 0):+.2f} USDT"
                 )
                 logger.info(msg)
                 send_telegram(msg)
@@ -145,9 +111,11 @@ def daily_report(current_pnl):
     logger.info(msg)
     send_telegram(msg)
 
-# ——— Основная логика перебалансировки ———
+# ——— Основная логика ———
 def rebalance_grid():
-    global last_positions, last_report_date, daily_start_pnl
+    global last_positions, last_report_date, daily_start_pnl, grid_center, current_trend, trend_confirmation
+    global last_flat_time, position_open_time, trail_stop_price
+
     client = get_okx_demo_client()
 
     # Получение цены
@@ -164,28 +132,39 @@ def rebalance_grid():
     current_positions = get_positions(client, SYMBOL)
     current_pnl = current_positions.get('unrealizedPnl', 0.0)
 
-    # Ежедневный отчёт
-    today = date.today()
-    if today != last_report_date:
+    # Ежедневный отчёт в 09:00 UTC
+    now = datetime.utcnow()
+    if now.hour == 9 and date.today() != last_report_date:
         daily_report(current_pnl)
         daily_start_pnl = current_pnl
-        last_report_date = today
+        last_report_date = date.today()
 
     # Анализ тренда
     df = fetch_ohlcv(client, SYMBOL)
     indicators = calculate_ema_rsi_atr(df)
     trend_flag, direction = is_trending(indicators)
 
+    # Двухфакторный выход: смена тренда + 1.5×ATR
+    if current_positions:
+        side = current_positions['side']
+        if trend_flag and direction != side:
+            ema = indicators['ema']
+            atr = indicators['atr']
+            if abs(price - ema) > 1.5 * atr:
+                logger.info("Trend flip + far from EMA – close")
+                send_telegram("🔄 Смена тренда + далеко от EMA – закрываем позицию")
+                close_all_positions(client, SYMBOL)
+                current_positions = {}
+
     if trend_flag:
-        trend_msg = f"📉 Тренд обнаружен — сетка отключена ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
+        trend_msg = f"📉 Тренд обнаружен ({datetime.now().strftime('%Y-%m-%d %H:%M')}) – сетка отключена"
         logger.info(trend_msg)
         send_telegram(trend_msg)
         cancel_all_orders(client, SYMBOL)
 
-        # Открытие трендовой позиции (если ещё не открыта)
         if not current_positions:
             try:
-                size = TREN_CAPITAL / price * 0.3  # ~30% от тренд-капитала
+                size = TREND_CAPITAL * 0.3 / price
                 size = max(size, 0.001)
                 client.create_order(
                     symbol=SYMBOL,
@@ -204,17 +183,14 @@ def rebalance_grid():
                 current_positions = get_positions(client, SYMBOL)
             except Exception as e:
                 send_telegram(f"❌ Ошибка открытия трендовой позиции: {e}")
-
     else:
-        # Режим сетки
         if current_positions:
             close_all_positions(client, SYMBOL)
             current_positions = {}
-
         cancel_all_orders(client, SYMBOL)
         place_grid_orders(client, SYMBOL, GRID_CAPITAL)
 
-    # Лог перебалансировки
+    # Уведомление о ребалансировке
     try:
         open_orders = client.fetch_open_orders(SYMBOL)
         order_count = len(open_orders)
@@ -228,10 +204,7 @@ def rebalance_grid():
         f"Ордеров: {order_count}"
     )
     if current_positions:
-        msg += (
-            f"\nПозиция: {current_positions['side']} {current_positions['size']:.4f} BTC\n"
-            f"PnL: {current_positions['unrealizedPnl']:.2f} USDT"
-        )
+        msg += f"\nПозиция: {current_positions['side']} {current_positions['size']:.4f} BTC\nPnL: {current_pnl:.2f} USDT"
     logger.info(msg)
     send_telegram(msg)
 
@@ -268,13 +241,11 @@ def run_flask():
 
 # ——— Запуск ———
 if __name__ == "__main__":
-    logger.info(f"🚀 Запуск бота | Капитал: {INITIAL_CAPITAL} USDT")
+    logger.info(f"🚀 Бот запущен | Капитал: {INITIAL_CAPITAL} USDT")
     threading.Thread(target=run_flask, daemon=True).start()
-
     while True:
         now = time.time()
         if int(now / 3600) != int(last_rebalance / 3600):
             rebalance_grid()
             last_rebalance = now
         time.sleep(60)
-
