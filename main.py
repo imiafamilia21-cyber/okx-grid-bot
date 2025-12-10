@@ -8,24 +8,30 @@ from flask import Flask, send_file, abort
 from okx_client import get_okx_demo_client
 from strategy import fetch_ohlcv, calculate_ema_rsi_atr, is_trending, cancel_all_orders, place_grid_orders
 
-# === Логирование: консоль + файл ===
+# === 1. НАСТРОЙКА ЛОГИРОВАНИЯ — ДО ВСЕГО ОСТАЛЬНОГО ===
 LOG_FILE = "/tmp/app.log"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
+# Создаём форматтер
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-console_handler = logging.StreamHandler()
-file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
 
+# Консольный хендлер
+console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
+
+# Файловый хендлер
+file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
 file_handler.setFormatter(formatter)
 
-logger.addHandler(console_handler)
-logger.addHandler(file_handler)
+# Настраиваем корневой логгер
+logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler])
+logger = logging.getLogger()
 
-# === Конфигурация ===
+# Принудительно сбрасываем буфер, чтобы файл создался сразу
+for handler in logger.handlers:
+    handler.flush()
+
+# === 2. КОНФИГУРАЦИЯ ===
 SYMBOL = "BTC-USDT-SWAP"
 INITIAL_CAPITAL = 120.0
 GRID_CAPITAL = 84.0
@@ -35,7 +41,7 @@ RISK_PER_TRADE = 0.005
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# === Глобальные переменные ===
+# === 3. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
 last_positions = {}
 last_report_date = date.today()
 total_pnl = 0.0
@@ -44,12 +50,14 @@ winning_trades = 0
 equity_high = INITIAL_CAPITAL
 max_drawdown = 0.0
 
-# === Telegram ===
+# === 4. TELEGRAM ===
 def send_telegram(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("Telegram не настроен")
         return
     for _ in range(3):
         try:
+            # ИСПРАВЛЕНО: убраны пробелы после 'bot'
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
             payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': text, 'parse_mode': 'HTML'}
             requests.post(url, data=payload, timeout=10)
@@ -59,7 +67,7 @@ def send_telegram(text):
             logger.error(f"❌ Ошибка Telegram: {e}")
             time.sleep(2)
 
-# === Позиции ===
+# === 5. ПОЗИЦИИ ===
 def get_positions(client, symbol):
     try:
         positions = client.fetch_positions([symbol])
@@ -100,7 +108,7 @@ def close_all_positions(client, symbol):
         logger.error(f"❌ Ошибка закрытия позиций: {e}")
         send_telegram(f"❌ Ошибка закрытия позиций: {e}")
 
-# === Flask ===
+# === 6. FLASK ===
 app = Flask(__name__)
 
 @app.route('/health')
@@ -112,13 +120,14 @@ def get_logs():
     if os.path.exists(LOG_FILE):
         return send_file(LOG_FILE, mimetype='text/plain')
     else:
+        logger.error(f"LOG_FILE не найден: {LOG_FILE}")
         abort(404, "Log file not found")
 
 def run_flask():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, threaded=True)
 
-# === Основная логика ===
+# === 7. ОСНОВНАЯ ЛОГИКА ===
 def rebalance_grid():
     global last_positions, last_report_date, total_pnl, total_trades, winning_trades, equity_high, max_drawdown
 
@@ -142,20 +151,17 @@ def rebalance_grid():
     trend_flag, direction = is_trending(indicators)
 
     if trend_flag:
-        msg = f"📉 Тренд обнаружен ({datetime.now().strftime('%Y-%m-%d %H:%M')}) – закрываем всё и запускаем тренд-фолловинг"
+        msg = f"📉 Тренд обнаружен ({datetime.now().strftime('%Y-%m-%d %H:%M')}) – закрываем всё"
         logger.info(msg)
         send_telegram(msg)
 
-        # Закрыть ВСЕ позиции (даже от сетки)
         close_all_positions(client, SYMBOL)
         current_positions = {}
-
-        # Отменить все ордера
         cancel_all_orders(client, SYMBOL)
 
-        # Открыть чистую трендовую позицию
+        # Открытие трендовой позиции
         try:
-            size = TREN_CAPITAL * 0.3 / price
+            size = TREND_CAPITAL * 0.3 / price
             size = max(size, 0.001)
             client.create_order(
                 symbol=SYMBOL,
@@ -173,9 +179,8 @@ def rebalance_grid():
             send_telegram(msg)
             current_positions = get_positions(client, SYMBOL)
         except Exception as e:
-            send_telegram(f"❌ Ошибка тренд-входа: {e}")
+            send_telegram(f"❌ Ошибка трендового входа: {e}")
     else:
-        # Режим сетки
         if current_positions:
             close_all_positions(client, SYMBOL)
             current_positions = {}
@@ -191,16 +196,14 @@ def rebalance_grid():
 
     msg = (
         f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Перебалансировка\n"
-        f"Цена: {price:.1f}\n"
-        f"Капитал: {INITIAL_CAPITAL:.2f} USDT\n"
-        f"Ордеров: {order_count}"
+        f"Цена: {price:.1f} | Капитал: {INITIAL_CAPITAL:.2f} USDT | Ордеров: {order_count}"
     )
     if current_positions:
         msg += f"\nПозиция: {current_positions['side']} {current_positions['size']:.4f} BTC | PnL: {current_pnl:.2f} USDT"
     logger.info(msg)
     send_telegram(msg)
 
-    # Обработка закрытия сделки
+    # Лог закрытия сделки
     if last_positions and not current_positions:
         pnl = last_positions.get('unrealizedPnl', 0)
         total_pnl += pnl
@@ -246,9 +249,13 @@ def rebalance_grid():
         send_telegram(report)
         last_report_date = today
 
-# === Запуск ===
+# === 8. ЗАПУСК ===
 if __name__ == "__main__":
-    logger.info(f"🚀 Бот запущен | Капитал: {INITIAL_CAPITAL} USDT")
+    logger.info("🚀 Бот запущен с логированием в /tmp/app.log и эндпоинтом /logs")
+    # Повторный flush на всякий случай
+    for handler in logger.handlers:
+        handler.flush()
+    
     threading.Thread(target=run_flask, daemon=True).start()
     last_rebalance = 0
     while True:
