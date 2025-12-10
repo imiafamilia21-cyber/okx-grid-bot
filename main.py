@@ -1,4 +1,37 @@
 import time
+import subprocess
+import threading
+
+RCLONE_CONFIG = "/etc/secrets/rclone.conf"
+
+def send_logs_daily():
+    while True:
+        # считаем сколько секунд до ближайшей полуночи
+        now = time.localtime()
+        seconds_until_midnight = (
+            (24 - now.tm_hour) * 3600
+            - now.tm_min * 60
+            - now.tm_sec
+        )
+        time.sleep(seconds_until_midnight)
+
+        # запускаем rclone для копирования логов
+        subprocess.run([
+            "rclone",
+            "--config", RCLONE_CONFIG,
+            "copy",
+            "/app/logs",
+            "gdrive:/logs"
+        ])
+
+# запускаем отдельный поток для копирования логов каждый день в 00:00
+threading.Thread(target=send_logs_daily, daemon=True).start()
+
+# --- здесь идёт твой основной код бота ---
+# например:
+# if __name__ == "__main__":
+#     run_bot()
+import time
 import requests
 import logging
 import threading
@@ -244,3 +277,4 @@ if __name__ == "__main__":
             rebalance_grid()
             last_rebalance = now
         time.sleep(60)
+
