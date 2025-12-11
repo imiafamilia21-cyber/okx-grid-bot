@@ -42,9 +42,9 @@ logger = logging.getLogger()
 
 # === Конфигурация ===
 SYMBOL = "ETH-USDT-SWAP"
-INITIAL_CAPITAL = 120.0
-GRID_CAPITAL = 84.0
-TREND_CAPITAL = 36.0
+INITIAL_CAPITAL = 240.0  # Увеличено до $240
+GRID_CAPITAL = 168.0     # 70% от $240
+TREND_CAPITAL = 72.0     # 30% от $240
 RISK_PER_TRADE = 0.005
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -128,7 +128,7 @@ def health():
 
 @app.route('/logs')
 def get_logs():
-    if os.path.exists(LOGING_FILE):
+    if os.path.exists(LOG_FILE):
         return send_file(LOG_FILE, mimetype='text/plain')
     else:
         abort(404, "Log file not found")
@@ -139,7 +139,7 @@ def run_flask():
 
 # === Фильтр макроновостей ===
 def is_high_impact_news_today():
-    today_str = datetime.now(timezone.utc).strftime('%m-%d')  # ← ИСПРАВЛЕНО: utc вместо UTC
+    today_str = datetime.now(timezone.utc).strftime('%m-%d')
     high_risk_dates = ['01-31', '04-30', '07-31', '10-31']
     return today_str in high_risk_dates
 
@@ -305,7 +305,7 @@ def rebalance_grid():
 
 # === Запуск ===
 if __name__ == "__main__":
-    logger.info("🚀 Бот запущен для ETH с полной защитой риска и Stop Voron v5")
+    logger.info("🚀 Бот запущен для ETH с капиталом $240 и Stop Voron v5")
     threading.Thread(target=run_flask, daemon=True).start()
     last_rebalance = 0
     while True:
