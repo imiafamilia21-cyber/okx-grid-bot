@@ -2,9 +2,8 @@ name: Backup Logs from Render
 
 on:
   schedule:
-    # Запуск каждый день в 00:00 UTC (03:00 по Минску)
     - cron: '0 0 * * *'
-  workflow_dispatch:  # позволяет запускать вручную
+  workflow_dispatch:
 
 jobs:
   backup-logs:
@@ -13,15 +12,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set log filename with date
+      - name: Set log filename with custom prefix and date
         id: set_filename
-        run: echo "LOG_FILE=app-$(date -u +%Y-%m-%d).log" >> "$GITHUB_ENV"
+        run: echo "LOG_FILE=ETH_grid-$(date -u +%Y-%m-%d).log" >> "$GITHUB_ENV"
 
       - name: Fetch logs from Render
         run: |
           curl -sSf "https://okx-grid-bot.onrender.com/logs" -o "$LOG_FILE"
 
-      - name: Upload logs as artifact with date-based name
+      - name: Upload logs as artifact with custom name
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.LOG_FILE }}
