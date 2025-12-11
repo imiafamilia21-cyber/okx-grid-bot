@@ -72,7 +72,7 @@ def cancel_all_orders(client, symbol):
 def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=None):
     ticker = client.fetch_ticker(symbol)
     price = ticker['last']
-    min_size = 0.01  # ← ИСПРАВЛЕНО: минимальный размер для ETH = 0.01
+    min_size = 0.001  # ← ИСПРАВЛЕНО: OKX позволяет 0.001 ETH
 
     if upper_pct is not None and lower_pct is not None:
         upper = price * (1 + upper_pct / 100)
