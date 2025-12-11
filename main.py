@@ -41,7 +41,7 @@ logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler]
 logger = logging.getLogger()
 
 # === Конфигурация ===
-SYMBOL = "BTC-USDT-SWAP"
+SYMBOL = "ETH-USDT-SWAP"
 INITIAL_CAPITAL = 120.0
 GRID_CAPITAL = 84.0
 TREND_CAPITAL = 36.0
@@ -110,7 +110,7 @@ def close_all_positions(client, symbol):
                 )
                 msg = (
                     f"🔴 Закрыта позиция ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-                    f"{p['side'].upper()} {size:.4f} BTC\n"
+                    f"{p['side'].upper()} {size:.4f} ETH\n"
                     f"Вход: {p['entryPrice']:.1f} → PnL: {p.get('unrealizedPnl', 0):+.2f} USDT"
                 )
                 logger.info(msg)
@@ -213,8 +213,8 @@ def rebalance_grid():
         size = risk_usd / distance
 
         if size < 0.01:
-            logger.info(f"Рассчитанный размер ({size:.4f} BTC) < 0.01 BTC — вход пропущен")
-            send_telegram("⚠️ Размер < 0.01 BTC — вход в тренд пропущен (риск 0.5% соблюдён)")
+            logger.info(f"Рассчитанный размер ({size:.4f} ETH) < 0.01 ETH — вход пропущен")
+            send_telegram("⚠️ Размер < 0.01 ETH — вход в тренд пропущен (риск 0.5% соблюдён)")
             place_grid_orders(client, SYMBOL, GRID_CAPITAL)
             return
 
@@ -228,7 +228,7 @@ def rebalance_grid():
             )
             msg = (
                 f"🆕 Позиция открыта ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-                f"{direction.upper()} {size:.4f} BTC\n"
+                f"{direction.upper()} {size:.4f} ETH\n"
                 f"Цена входа: {price:.1f}"
             )
             logger.info(msg)
@@ -254,7 +254,7 @@ def rebalance_grid():
         f"Цена: {price:.1f} | Капитал: {INITIAL_CAPITAL:.2f} USDT | Ордеров: {order_count}"
     )
     if current_positions:
-        msg += f"\nПозиция: {current_positions['side']} {current_positions['size']:.4f} BTC | PnL: {current_pnl:.2f} USDT"
+        msg += f"\nПозиция: {current_positions['side']} {current_positions['size']:.4f} ETH | PnL: {current_pnl:.2f} USDT"
     logger.info(msg)
     send_telegram(msg)
 
@@ -280,7 +280,7 @@ def rebalance_grid():
             f"CloseOperation ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
             f"{result}\n"
             f"PnL: {pnl:.2f} USDT\n"
-            f"{side.upper()} {size:.4f} BTC\n"
+            f"{side.upper()} {size:.4f} ETH\n"
             f"Вход: {entry:.1f} → Выход: ~{price:.1f}"
         )
         logger.info(msg)
@@ -304,7 +304,7 @@ def rebalance_grid():
 
 # === Запуск ===
 if __name__ == "__main__":
-    logger.info("🚀 Бот запущен для BTC с полной защитой риска и Stop Voron v5")
+    logger.info("🚀 Бот запущен для ETH с полной защитой риска и Stop Voron v5")
     threading.Thread(target=run_flask, daemon=True).start()
     last_rebalance = 0
     while True:
