@@ -1,0 +1,24 @@
+name: Backup Logs from Render
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  backup-logs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch logs from Render
+        run: |
+          curl -sSf "https://okx-grid-bot.onrender.com/logs" -o "app-$(date -u +%Y-%m-%d).log"
+
+      - name: Upload logs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: app-*.log
+          retention-days: 30
