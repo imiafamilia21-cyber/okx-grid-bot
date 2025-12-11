@@ -1,47 +1,59 @@
-import os
 import time
+import requests
 import logging
 import threading
-import requests
+import os
 from datetime import datetime, date
 from flask import Flask, send_file, abort
-from okx_client import get_okx_demo_client
-from strategy import fetch_ohlcv, calculate_ema_rsi_atr, is_trending, cancel_all_orders, place_grid_orders
 
-# === 1. НАСТРОЙКА ЛОГИРОВАНИЯ — ДО ВСЕГО ОСТАЛЬНОГО ===
+# === ВСТРОЕННЫЙ StopVoronPro v5 ===
+class StopVoronPro:
+    def __init__(self, base_atr_mult=2.0, min_risk_pct=0.005, max_risk_pct=0.04, trailing_enabled=True, breakeven_atr=1.5):
+        self.base_atr_mult = base_atr_mult
+        self.min_risk_pct = min_risk_pct
+        self.max_risk_pct = max_risk_pct
+        self.trailing_enabled = trailing_enabled
+        self.breakeven_atr = breakeven_atr
+
+    def calculate_stop(self, entry, atr, side, current_price, volatility_ratio, market_regime="normal"):
+        risk_pct = 0.010 if market_regime == "trending" else 0.008
+        stop_distance = risk_pct * current_price
+        atr_distance = self.base_atr_mult * atr
+        final_distance = max(stop_distance, atr_distance, current_price * self.min_risk_pct)
+        final_date = min(final_distance, current_price * self.max_risk_pct)
+        return entry - final_distance if side == "buy" else entry + final_distance
+
+    def check_exit(self, current_price, stop_level, side, bar_low, bar_high):
+        if side == "buy":
+            return bar_low <= stop_level
+        else:
+            return bar_high >= stop_level
+
+# === Логирование ===
 LOG_FILE = "/tmp/app.log"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
-# Создаём форматтер
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-
-# Консольный хендлер
 console_handler = logging.StreamHandler()
-console_handler.setFormatter(formatter)
-
-# Файловый хендлер
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+console_handler.setFormatter(formatter)
 file_handler.setFormatter(formatter)
 
-# Настраиваем корневой логгер
 logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler])
 logger = logging.getLogger()
 
-# Принудительный flush, чтобы файл создался сразу
-for handler in logger.handlers:
-    handler.flush()
-
-# === 2. КОНФИГУРАЦИЯ ===
-SYMBOL = "BTC-USDT-SWAP"
+# === Конфигурация ===
+SYMBOL = "ETH-USDT-SWAP"
 INITIAL_CAPITAL = 120.0
 GRID_CAPITAL = 84.0
 TREND_CAPITAL = 36.0
 RISK_PER_TRADE = 0.005
+EXPECTED_ORDERS = 12
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# === 3. ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ===
+# === Глобальные переменные ===
 last_positions = {}
 last_report_date = date.today()
 total_pnl = 0.0
@@ -49,15 +61,14 @@ total_trades = 0
 winning_trades = 0
 equity_high = INITIAL_CAPITAL
 max_drawdown = 0.0
+last_flat_time = datetime.min
 
-# === 4. TELEGRAM ===
+# === Вспомогательные функции ===
 def send_telegram(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram не настроен")
         return
     for _ in range(3):
         try:
-            # ИСПРАВЛЕНО: убраны пробелы после 'bot'
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
             payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': text, 'parse_mode': 'HTML'}
             requests.post(url, data=payload, timeout=10)
@@ -67,7 +78,6 @@ def send_telegram(text):
             logger.error(f"❌ Ошибка Telegram: {e}")
             time.sleep(2)
 
-# === 5. ПОЗИЦИИ ===
 def get_positions(client, symbol):
     try:
         positions = client.fetch_positions([symbol])
@@ -99,7 +109,7 @@ def close_all_positions(client, symbol):
                 )
                 msg = (
                     f"🔴 Закрыта позиция ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-                    f"{p['side'].upper()} {size:.4f} BTC\n"
+                    f"{p['side'].upper()} {size:.4f} ETH\n"
                     f"Вход: {p['entryPrice']:.1f} → PnL: {p.get('unrealizedPnl', 0):+.2f} USDT"
                 )
                 logger.info(msg)
@@ -108,7 +118,7 @@ def close_all_positions(client, symbol):
         logger.error(f"❌ Ошибка закрытия позиций: {e}")
         send_telegram(f"❌ Ошибка закрытия позиций: {e}")
 
-# === 6. FLASK ===
+# === Flask ===
 app = Flask(__name__)
 
 @app.route('/health')
@@ -120,18 +130,36 @@ def get_logs():
     if os.path.exists(LOG_FILE):
         return send_file(LOG_FILE, mimetype='text/plain')
     else:
-        logger.error(f"LOG_FILE не найден: {LOG_FILE}")
         abort(404, "Log file not found")
 
 def run_flask():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, threaded=True)
 
-# === 7. ОСНОВНАЯ ЛОГИКА ===
+# === Проверка новостей ===
+def is_high_impact_news_today():
+    # Упрощённая реализация — реальная требует API
+    # Для MVP — отключаем торговлю в известные дни
+    today_str = datetime.utcnow().strftime('%m-%d')
+    high_risk_dates = ['01-31', '02-28', '03-31', '04-30', '05-31', '06-30',
+                       '07-31', '08-31', '09-30', '10-31', '11-30', '12-31']
+    return today_str in high_risk_dates
+
+# === Основная логика ===
 def rebalance_grid():
-    global last_positions, last_report_date, total_pnl, total_trades, winning_trades, equity_high, max_drawdown
+    global last_positions, last_report_date, total_pnl, total_trades, winning_trades, equity_high, max_drawdown, last_flat_time
+
+    from okx_client import get_okx_demo_client
+    from strategy import fetch_ohlcv, calculate_ema_rsi_atr, is_trending, cancel_all_orders, place_grid_orders
 
     client = get_okx_demo_client()
+
+    # High-impact news filter
+    if is_high_impact_news_today():
+        cancel_all_orders(client, SYMBOL)
+        close_all_positions(client, SYMBOL)
+        send_telegram("🚫 Высокая волатильность: торговля отключена")
+        return
 
     try:
         ticker = client.fetch_ticker(SYMBOL)
@@ -150,6 +178,26 @@ def rebalance_grid():
     indicators = calculate_ema_rsi_atr(df)
     trend_flag, direction = is_trending(indicators)
 
+    # Сбор 1m данных для защиты от гэпов
+    try:
+        m1_data = client.fetch_ohlcv(SYMBOL, '1m', limit=5)
+        bar_low = min(candle[3] for candle in m1_data)
+        bar_high = max(candle[2] for candle in m1_data)
+    except:
+        bar_low = bar_high = price
+
+    # Stop Voron проверка
+    if current_positions:
+        side = current_positions['side']
+        entry = current_positions['entry']
+        atr = indicators['atr']
+        stop_voron = StopVoronPro()
+        stop_level = stop_voron.calculate_stop(entry, atr, side, price, atr/price, "trending" if trend_flag else "normal")
+        if stop_voron.check_exit(price, stop_level, side, bar_low, bar_high):
+            logger.info("Stop Voron: срабатывание стопа")
+            close_all_positions(client, SYMBOL)
+            current_positions = {}
+
     if trend_flag:
         msg = f"📉 Тренд обнаружен ({datetime.now().strftime('%Y-%m-%d %H:%M')}) – закрываем всё"
         logger.info(msg)
@@ -159,10 +207,22 @@ def rebalance_grid():
         current_positions = {}
         cancel_all_orders(client, SYMBOL)
 
-        # Открытие трендовой позиции
+        # Расчёт размера с проверкой минимального объёма
+        atr = indicators['atr']
+        stop_price = price - 2 * atr if direction == "buy" else price + 2 * atr
+        risk_usd = TREND_CAPITAL * RISK_PER_TRADE
+        distance = abs(price - stop_price)
+        if distance <= 0:
+            logger.warning("Расстояние до стопа = 0 — пропускаем")
+            return
+        size = risk_usd / distance
+
+        if size < 0.01:
+            logger.info(f"Рассчитанный размер ({size:.4f} ETH) < 0.01 ETH — вход пропущен")
+            send_telegram(f"⚠️ Размер < 0.01 ETH — вход в тренд пропущен (риск 0.5% соблюдён)")
+            return
+
         try:
-            size = TREND_CAPITAL * 0.3 / price
-            size = max(size, 0.001)
             client.create_order(
                 symbol=SYMBOL,
                 type='market',
@@ -172,7 +232,7 @@ def rebalance_grid():
             )
             msg = (
                 f"🆕 Позиция открыта ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-                f"{direction.upper()} {size:.4f} BTC\n"
+                f"{direction.upper()} {size:.4f} ETH\n"
                 f"Цена входа: {price:.1f}"
             )
             logger.info(msg)
@@ -199,11 +259,11 @@ def rebalance_grid():
         f"Цена: {price:.1f} | Капитал: {INITIAL_CAPITAL:.2f} USDT | Ордеров: {order_count}"
     )
     if current_positions:
-        msg += f"\nПозиция: {current_positions['side']} {current_positions['size']:.4f} BTC | PnL: {current_pnl:.2f} USDT"
+        msg += f"\nПозиция: {current_positions['side']} {current_positions['size']:.4f} ETH | PnL: {current_pnl:.2f} USDT"
     logger.info(msg)
     send_telegram(msg)
 
-    # Лог закрытия сделки
+    # Обработка закрытия сделки
     if last_positions and not current_positions:
         pnl = last_positions.get('unrealizedPnl', 0)
         total_pnl += pnl
@@ -226,7 +286,7 @@ def rebalance_grid():
             f"CloseOperation ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
             f"{result}\n"
             f"PnL: {pnl:.2f} USDT\n"
-            f"{side.upper()} {size:.4f} BTC\n"
+            f"{side.upper()} {size:.4f} ETH\n"
             f"Вход: {entry:.1f} → Выход: ~{price:.1f}"
         )
         logger.info(msg)
@@ -249,20 +309,9 @@ def rebalance_grid():
         send_telegram(report)
         last_report_date = today
 
-# === 8. ЗАПУСК ===
+# === Запуск ===
 if __name__ == "__main__":
-    logger.info("🚀 Бот запущен с логированием в /tmp/app.log и эндпоинтом /logs")
-    
-    # ЯВНАЯ ПРОВЕРКА: существует ли файл лога
-    if os.path.exists(LOG_FILE):
-        logger.info(f"✅ Файл лога подтверждён: {LOG_FILE}")
-    else:
-        logger.critical(f"❌ Файл лога НЕ СОЗДАН: {LOG_FILE}")
-    
-    # Flush всех хендлеров
-    for handler in logger.handlers:
-        handler.flush()
-    
+    logger.info("🚀 Бот запущен для ETH с полной защитой риска и Stop Voron v5")
     threading.Thread(target=run_flask, daemon=True).start()
     last_rebalance = 0
     while True:
