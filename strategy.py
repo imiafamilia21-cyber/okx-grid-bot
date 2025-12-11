@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 from okx_client import get_okx_demo_client
 
 def fetch_ohlcv(client, symbol, timeframe='15m', limit=100):
@@ -11,13 +13,11 @@ def calculate_ema_rsi_atr(ohlcv, ema_period=50, rsi_period=14, atr_period=14):
     highs = [candle[2] for candle in ohlcv]
     lows = [candle[3] for candle in ohlcv]
     
-    # EMA
     ema = closes[-1]
     multiplier = 2 / (ema_period + 1)
     for i in range(len(closes)-2, -1, -1):
         ema = closes[i] * multiplier + ema * (1 - multiplier)
     
-    # RSI
     deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
     gains = [d for d in deltas if d > 0]
     losses = [-d for d in deltas if d < 0]
@@ -26,7 +26,6 @@ def calculate_ema_rsi_atr(ohlcv, ema_period=50, rsi_period=14, atr_period=14):
     rs = avg_gain / avg_loss if avg_loss else 0
     rsi = 100 - (100 / (1 + rs)) if rs else 50
     
-    # ATR
     tr_list = []
     for i in range(1, len(closes)):
         tr1 = highs[i] - lows[i]
@@ -73,8 +72,7 @@ def cancel_all_orders(client, symbol):
 def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=None):
     ticker = client.fetch_ticker(symbol)
     price = ticker['last']
-    min_size = 0.001  # минимальный размер для ETH
-    min_cost = 5.0    # минимальная стоимость ордера в USDT
+    min_size = 0.01  # ← ИСПРАВЛЕНО: минимальный размер для ETH = 0.01
 
     if upper_pct is not None and lower_pct is not None:
         upper = price * (1 + upper_pct / 100)
@@ -94,14 +92,11 @@ def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=No
     total_levels = grid_levels * 2
     usd_per_level = total_usd / total_levels
 
-    placed_orders = 0
     for i in range(1, grid_levels + 1):
         # Покупки
         buy_price = center - i * step
         buy_size = usd_per_level / buy_price
-        buy_cost = buy_size * buy_price
-        
-        if buy_size >= min_size and buy_cost >= min_cost:
+        if buy_size >= min_size:
             try:
                 client.create_order(
                     symbol=symbol,
@@ -111,16 +106,13 @@ def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=No
                     price=buy_price,
                     params={'tdMode': 'isolated', 'posSide': 'net'}
                 )
-                placed_orders += 1
             except Exception as e:
                 logger.error(f"❌ Ошибка покупки на {buy_price}: {e}")
         
         # Продажи
         sell_price = center + i * step
         sell_size = usd_per_level / sell_price
-        sell_cost = sell_size * sell_price
-        
-        if sell_size >= min_size and sell_cost >= min_cost:
+        if sell_size >= min_size:
             try:
                 client.create_order(
                     symbol=symbol,
@@ -130,8 +122,5 @@ def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=No
                     price=sell_price,
                     params={'tdMode': 'isolated', 'posSide': 'net'}
                 )
-                placed_orders += 1
             except Exception as e:
                 logger.error(f"❌ Ошибка продажи на {sell_price}: {e}")
-    
-    logger.info(f"✅ Успешно размещено ордеров: {placed_orders}")
