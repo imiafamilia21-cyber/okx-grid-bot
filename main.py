@@ -65,7 +65,6 @@ def send_telegram(text):
         return
     for _ in range(3):
         try:
-            # ✅ Исправлено: убраны лишние пробелы в URL
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
             payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': text, 'parse_mode': 'HTML'}
             requests.post(url, data=payload, timeout=10)
@@ -94,7 +93,6 @@ def get_positions(client, symbol):
 def close_all_positions(client, symbol):
     try:
         positions = client.fetch_positions([symbol])
-        # ✅ Исправлено: закрываем ТОЛЬКО если позиции есть
         if not any(p.get('contracts', 0) > 0 for p in positions):
             logger.info("Нет позиций для закрытия")
             return
@@ -126,7 +124,7 @@ app = Flask(__name__)
 
 @app.route('/health')
 def health():
-    return 'OK', 200
+    return 'OK'
 
 @app.route('/logs')
 def get_logs():
@@ -139,10 +137,10 @@ def run_flask():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, threaded=True)
 
-# === Фильтр новостей (упрощённый) ===
+# === Фильтр макроновостей ===
 def is_high_impact_news_today():
     today_str = datetime.utcnow().strftime('%m-%d')
-    high_risk_dates = ['01-31', '04-30', '07-31', '10-31']  # Пример: конец квартала
+    high_risk_dates = ['01-31', '04-30', '07-31', '10-31']
     return today_str in high_risk_dates
 
 # === Основная логика ===
@@ -154,7 +152,6 @@ def rebalance_grid():
 
     client = get_okx_demo_client()
 
-    # ✅ Фильтр новостей
     if is_high_impact_news_today():
         cancel_all_orders(client, SYMBOL)
         close_all_positions(client, SYMBOL)
@@ -173,12 +170,10 @@ def rebalance_grid():
     current_positions = get_positions(client, SYMBOL)
     current_pnl = current_positions.get('unrealizedPnl', 0.0)
 
-    # Анализ тренда
     df = fetch_ohlcv(client, SYMBOL)
     indicators = calculate_ema_rsi_atr(df)
     trend_flag, direction = is_trending(indicators)
 
-    # Сбор 1m для защиты от гэпов
     try:
         m1_data = client.fetch_ohlcv(SYMBOL, '1m', limit=5)
         bar_low = min(candle[3] for candle in m1_data)
@@ -186,7 +181,6 @@ def rebalance_grid():
     except:
         bar_low = bar_high = price
 
-    # Stop Voron проверка
     if current_positions:
         side = current_positions['side']
         entry = current_positions['entry']
@@ -203,14 +197,12 @@ def rebalance_grid():
         logger.info(msg)
         send_telegram(msg)
 
-        # ✅ Закрываем ТОЛЬКО если позиции есть
         positions = client.fetch_positions([SYMBOL])
         if any(p.get('contracts', 0) > 0 for p in positions):
             close_all_positions(client, SYMBOL)
         current_positions = {}
         cancel_all_orders(client, SYMBOL)
 
-        # ✅ Расчёт размера с проверкой мин. объёма
         atr = indicators['atr']
         stop_price = price - 2 * atr if direction == "buy" else price + 2 * atr
         risk_usd = TREND_CAPITAL * RISK_PER_TRADE
@@ -223,7 +215,6 @@ def rebalance_grid():
         if size < 0.01:
             logger.info(f"Рассчитанный размер ({size:.4f} BTC) < 0.01 BTC — вход пропущен")
             send_telegram("⚠️ Размер < 0.01 BTC — вход в тренд пропущен (риск 0.5% соблюдён)")
-            # ✅ Возвращаемся к сетке
             place_grid_orders(client, SYMBOL, GRID_CAPITAL)
             return
 
@@ -252,7 +243,6 @@ def rebalance_grid():
         cancel_all_orders(client, SYMBOL)
         place_grid_orders(client, SYMBOL, GRID_CAPITAL)
 
-    # Уведомление о перебалансировке
     try:
         open_orders = client.fetch_open_orders(SYMBOL)
         order_count = len(open_orders)
@@ -268,7 +258,6 @@ def rebalance_grid():
     logger.info(msg)
     send_telegram(msg)
 
-    # Обработка закрытия сделки
     if last_positions and not current_positions:
         pnl = last_positions.get('unrealizedPnl', 0)
         total_pnl += pnl
@@ -299,7 +288,6 @@ def rebalance_grid():
 
     last_positions = current_positions.copy() if current_positions else {}
 
-    # Ежедневный отчёт
     today = date.today()
     if today != last_report_date:
         win_rate = round(winning_trades / total_trades * 100, 1) if total_trades > 0 else 0.0
