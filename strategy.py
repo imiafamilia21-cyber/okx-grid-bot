@@ -1,5 +1,4 @@
 from okx_client import get_okx_demo_client
-from config import SYMBOL, GRID_RANGE_PCT, GRID_LEVELS
 
 def fetch_ohlcv(client, symbol, timeframe='15m', limit=100):
     return client.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -51,9 +50,9 @@ def is_trending(data):
     rsi = data['rsi']
     atr = data['atr']
     atr_prev = data.get('atr_prev', atr * 0.95)
-    atr_increasing = atr > atr_prev * 1.02  # смягчённое условие
+    atr_increasing = atr > atr_prev * 1.02
     
-    if price > ema and rsi > 50 and atr_increasing:  # смягчённый RSI
+    if price > ema and rsi > 50 and atr_increasing:
         return True, 'buy'
     elif price < ema and rsi < 50 and atr_increasing:
         return True, 'sell'
@@ -90,7 +89,6 @@ def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=No
         grid_levels = 6
         step = (upper - lower) / (grid_levels * 2)
 
-    # Обеспечиваем, что размер >= min_size
     total_levels = grid_levels * 2
     for i in range(1, grid_levels + 1):
         # Покупки
