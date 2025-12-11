@@ -73,7 +73,8 @@ def cancel_all_orders(client, symbol):
 def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=None):
     ticker = client.fetch_ticker(symbol)
     price = ticker['last']
-    min_size = 0.001  # ← ИСПРАВЛЕНО: минимальный размер для ETH = 0.001
+    min_size = 0.001  # минимальный размер для ETH
+    min_cost = 5.0    # минимальная стоимость ордера в USDT
 
     if upper_pct is not None and lower_pct is not None:
         upper = price * (1 + upper_pct / 100)
@@ -93,11 +94,14 @@ def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=No
     total_levels = grid_levels * 2
     usd_per_level = total_usd / total_levels
 
+    placed_orders = 0
     for i in range(1, grid_levels + 1):
         # Покупки
         buy_price = center - i * step
         buy_size = usd_per_level / buy_price
-        if buy_size >= min_size:
+        buy_cost = buy_size * buy_price
+        
+        if buy_size >= min_size and buy_cost >= min_cost:
             try:
                 client.create_order(
                     symbol=symbol,
@@ -107,13 +111,16 @@ def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=No
                     price=buy_price,
                     params={'tdMode': 'isolated', 'posSide': 'net'}
                 )
-            except Exception:
-                pass
+                placed_orders += 1
+            except Exception as e:
+                logger.error(f"❌ Ошибка покупки на {buy_price}: {e}")
         
         # Продажи
         sell_price = center + i * step
         sell_size = usd_per_level / sell_price
-        if sell_size >= min_size:
+        sell_cost = sell_size * sell_price
+        
+        if sell_size >= min_size and sell_cost >= min_cost:
             try:
                 client.create_order(
                     symbol=symbol,
@@ -123,5 +130,8 @@ def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=No
                     price=sell_price,
                     params={'tdMode': 'isolated', 'posSide': 'net'}
                 )
-            except Exception:
-                pass
+                placed_orders += 1
+            except Exception as e:
+                logger.error(f"❌ Ошибка продажи на {sell_price}: {e}")
+    
+    logger.info(f"✅ Успешно размещено ордеров: {placed_orders}")
