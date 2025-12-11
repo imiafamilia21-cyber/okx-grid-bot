@@ -8,19 +8,17 @@ from flask import Flask, send_file, abort
 
 # === ВСТРОЕННЫЙ StopVoronPro v5 ===
 class StopVoronPro:
-    def __init__(self, base_atr_mult=2.0, min_risk_pct=0.005, max_risk_pct=0.04, trailing_enabled=True, breakeven_atr=1.5):
+    def __init__(self, base_atr_mult=2.0, min_risk_pct=0.005, max_risk_pct=0.04):
         self.base_atr_mult = base_atr_mult
         self.min_risk_pct = min_risk_pct
         self.max_risk_pct = max_risk_pct
-        self.trailing_enabled = trailing_enabled
-        self.breakeven_atr = breakeven_atr
 
     def calculate_stop(self, entry, atr, side, current_price, volatility_ratio, market_regime="normal"):
         risk_pct = 0.010 if market_regime == "trending" else 0.008
         stop_distance = risk_pct * current_price
         atr_distance = self.base_atr_mult * atr
         final_distance = max(stop_distance, atr_distance, current_price * self.min_risk_pct)
-        final_date = min(final_distance, current_price * self.max_risk_pct)
+        final_distance = min(final_distance, current_price * self.max_risk_pct)
         return entry - final_distance if side == "buy" else entry + final_distance
 
     def check_exit(self, current_price, stop_level, side, bar_low, bar_high):
@@ -43,12 +41,11 @@ logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler]
 logger = logging.getLogger()
 
 # === Конфигурация ===
-SYMBOL = "ETH-USDT-SWAP"
+SYMBOL = "BTC-USDT-SWAP"
 INITIAL_CAPITAL = 120.0
 GRID_CAPITAL = 84.0
 TREND_CAPITAL = 36.0
 RISK_PER_TRADE = 0.005
-EXPECTED_ORDERS = 12
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -61,14 +58,14 @@ total_trades = 0
 winning_trades = 0
 equity_high = INITIAL_CAPITAL
 max_drawdown = 0.0
-last_flat_time = datetime.min
 
-# === Вспомогательные функции ===
+# === Telegram ===
 def send_telegram(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     for _ in range(3):
         try:
+            # ✅ Исправлено: убраны лишние пробелы в URL
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
             payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': text, 'parse_mode': 'HTML'}
             requests.post(url, data=payload, timeout=10)
@@ -78,6 +75,7 @@ def send_telegram(text):
             logger.error(f"❌ Ошибка Telegram: {e}")
             time.sleep(2)
 
+# === Позиции ===
 def get_positions(client, symbol):
     try:
         positions = client.fetch_positions([symbol])
@@ -96,6 +94,11 @@ def get_positions(client, symbol):
 def close_all_positions(client, symbol):
     try:
         positions = client.fetch_positions([symbol])
+        # ✅ Исправлено: закрываем ТОЛЬКО если позиции есть
+        if not any(p.get('contracts', 0) > 0 for p in positions):
+            logger.info("Нет позиций для закрытия")
+            return
+
         for p in positions:
             if p.get('contracts', 0) > 0:
                 side = 'buy' if p['side'] == 'short' else 'sell'
@@ -109,7 +112,7 @@ def close_all_positions(client, symbol):
                 )
                 msg = (
                     f"🔴 Закрыта позиция ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-                    f"{p['side'].upper()} {size:.4f} ETH\n"
+                    f"{p['side'].upper()} {size:.4f} BTC\n"
                     f"Вход: {p['entryPrice']:.1f} → PnL: {p.get('unrealizedPnl', 0):+.2f} USDT"
                 )
                 logger.info(msg)
@@ -118,7 +121,7 @@ def close_all_positions(client, symbol):
         logger.error(f"❌ Ошибка закрытия позиций: {e}")
         send_telegram(f"❌ Ошибка закрытия позиций: {e}")
 
-# === Flask ===
+# === Flask: health + logs ===
 app = Flask(__name__)
 
 @app.route('/health')
@@ -136,25 +139,22 @@ def run_flask():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, threaded=True)
 
-# === Проверка новостей ===
+# === Фильтр новостей (упрощённый) ===
 def is_high_impact_news_today():
-    # Упрощённая реализация — реальная требует API
-    # Для MVP — отключаем торговлю в известные дни
     today_str = datetime.utcnow().strftime('%m-%d')
-    high_risk_dates = ['01-31', '02-28', '03-31', '04-30', '05-31', '06-30',
-                       '07-31', '08-31', '09-30', '10-31', '11-30', '12-31']
+    high_risk_dates = ['01-31', '04-30', '07-31', '10-31']  # Пример: конец квартала
     return today_str in high_risk_dates
 
 # === Основная логика ===
 def rebalance_grid():
-    global last_positions, last_report_date, total_pnl, total_trades, winning_trades, equity_high, max_drawdown, last_flat_time
+    global last_positions, last_report_date, total_pnl, total_trades, winning_trades, equity_high, max_drawdown
 
     from okx_client import get_okx_demo_client
     from strategy import fetch_ohlcv, calculate_ema_rsi_atr, is_trending, cancel_all_orders, place_grid_orders
 
     client = get_okx_demo_client()
 
-    # High-impact news filter
+    # ✅ Фильтр новостей
     if is_high_impact_news_today():
         cancel_all_orders(client, SYMBOL)
         close_all_positions(client, SYMBOL)
@@ -178,7 +178,7 @@ def rebalance_grid():
     indicators = calculate_ema_rsi_atr(df)
     trend_flag, direction = is_trending(indicators)
 
-    # Сбор 1m данных для защиты от гэпов
+    # Сбор 1m для защиты от гэпов
     try:
         m1_data = client.fetch_ohlcv(SYMBOL, '1m', limit=5)
         bar_low = min(candle[3] for candle in m1_data)
@@ -203,11 +203,14 @@ def rebalance_grid():
         logger.info(msg)
         send_telegram(msg)
 
-        close_all_positions(client, SYMBOL)
+        # ✅ Закрываем ТОЛЬКО если позиции есть
+        positions = client.fetch_positions([SYMBOL])
+        if any(p.get('contracts', 0) > 0 for p in positions):
+            close_all_positions(client, SYMBOL)
         current_positions = {}
         cancel_all_orders(client, SYMBOL)
 
-        # Расчёт размера с проверкой минимального объёма
+        # ✅ Расчёт размера с проверкой мин. объёма
         atr = indicators['atr']
         stop_price = price - 2 * atr if direction == "buy" else price + 2 * atr
         risk_usd = TREND_CAPITAL * RISK_PER_TRADE
@@ -218,8 +221,10 @@ def rebalance_grid():
         size = risk_usd / distance
 
         if size < 0.01:
-            logger.info(f"Рассчитанный размер ({size:.4f} ETH) < 0.01 ETH — вход пропущен")
-            send_telegram(f"⚠️ Размер < 0.01 ETH — вход в тренд пропущен (риск 0.5% соблюдён)")
+            logger.info(f"Рассчитанный размер ({size:.4f} BTC) < 0.01 BTC — вход пропущен")
+            send_telegram("⚠️ Размер < 0.01 BTC — вход в тренд пропущен (риск 0.5% соблюдён)")
+            # ✅ Возвращаемся к сетке
+            place_grid_orders(client, SYMBOL, GRID_CAPITAL)
             return
 
         try:
@@ -232,7 +237,7 @@ def rebalance_grid():
             )
             msg = (
                 f"🆕 Позиция открыта ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-                f"{direction.upper()} {size:.4f} ETH\n"
+                f"{direction.upper()} {size:.4f} BTC\n"
                 f"Цена входа: {price:.1f}"
             )
             logger.info(msg)
@@ -259,7 +264,7 @@ def rebalance_grid():
         f"Цена: {price:.1f} | Капитал: {INITIAL_CAPITAL:.2f} USDT | Ордеров: {order_count}"
     )
     if current_positions:
-        msg += f"\nПозиция: {current_positions['side']} {current_positions['size']:.4f} ETH | PnL: {current_pnl:.2f} USDT"
+        msg += f"\nПозиция: {current_positions['side']} {current_positions['size']:.4f} BTC | PnL: {current_pnl:.2f} USDT"
     logger.info(msg)
     send_telegram(msg)
 
@@ -286,7 +291,7 @@ def rebalance_grid():
             f"CloseOperation ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
             f"{result}\n"
             f"PnL: {pnl:.2f} USDT\n"
-            f"{side.upper()} {size:.4f} ETH\n"
+            f"{side.upper()} {size:.4f} BTC\n"
             f"Вход: {entry:.1f} → Выход: ~{price:.1f}"
         )
         logger.info(msg)
@@ -311,7 +316,7 @@ def rebalance_grid():
 
 # === Запуск ===
 if __name__ == "__main__":
-    logger.info("🚀 Бот запущен для ETH с полной защитой риска и Stop Voron v5")
+    logger.info("🚀 Бот запущен для BTC с полной защитой риска и Stop Voron v5")
     threading.Thread(target=run_flask, daemon=True).start()
     last_rebalance = 0
     while True:
