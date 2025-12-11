@@ -21,4 +21,5 @@ jobs:
         with:
           name: logs
           path: app-*.log
-          retention-days: 30
+          retention-days: 90
+          
