@@ -46,7 +46,6 @@ INITIAL_CAPITAL = 120.0
 GRID_CAPITAL = 84.0
 TREND_CAPITAL = 36.0
 RISK_PER_TRADE = 0.005
-EXPECTED_ORDERS = 12
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -110,7 +109,7 @@ def close_all_positions(client, symbol):
                     params={'reduceOnly': True, 'tdMode': 'isolated', 'posSide': 'net'}
                 )
                 msg = (
-                    f"🔴 Закрыта позиция ({datetime.now(timezone.UTC).strftime('%Y-%m-%d %H:%M')})\n"
+                    f"🔴 Закрыта позиция ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})\n"
                     f"{p['side'].upper()} {size:.4f} ETH\n"
                     f"Вход: {p['entryPrice']:.1f} → PnL: {p.get('unrealizedPnl', 0):+.2f} USDT"
                 )
@@ -129,7 +128,7 @@ def health():
 
 @app.route('/logs')
 def get_logs():
-    if os.path.exists(LOG_FILE):
+    if os.path.exists(LOGING_FILE):
         return send_file(LOG_FILE, mimetype='text/plain')
     else:
         abort(404, "Log file not found")
@@ -140,7 +139,7 @@ def run_flask():
 
 # === Фильтр макроновостей ===
 def is_high_impact_news_today():
-    today_str = datetime.now(timezone.UTC).strftime('%m-%d')
+    today_str = datetime.now(timezone.utc).strftime('%m-%d')  # ← ИСПРАВЛЕНО: utc вместо UTC
     high_risk_dates = ['01-31', '04-30', '07-31', '10-31']
     return today_str in high_risk_dates
 
@@ -194,7 +193,7 @@ def rebalance_grid():
             current_positions = {}
 
     if trend_flag:
-        msg = f"📉 Тренд обнаружен ({datetime.now(timezone.UTC).strftime('%Y-%m-%d %H:%M')}) – закрываем всё"
+        msg = f"📉 Тренд обнаружен ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}) – закрываем всё"
         logger.info(msg)
         send_telegram(msg)
 
@@ -214,14 +213,12 @@ def rebalance_grid():
         size = risk_usd / distance
 
         if size < 0.01:
-            # Адаптивный размер: использовать минимальный размер, но снизить риск пропорционально
-            size = 0.01
-            adjusted_risk = size * distance
-            logger.info(f"Рассчитанный размер ({size:.4f} ETH) < 0.01 ETH — адаптируем риск до {adjusted_risk:.2f} USDT")
-            send_telegram(f"⚠️ Адаптивный вход в тренд: размер 0.01 ETH, риск {adjusted_risk:.2f} USDT")
-        else:
-            logger.info(f"Рассчитанный размер ({size:.4f} ETH) >= 0.01 ETH — вход разрешен")
-        
+            logger.info(f"Рассчитанный размер ({size:.4f} ETH) < 0.01 ETH — вход пропущен. Возвращаемся к сетке.")
+            send_telegram("⚠️ Размер < 0.01 ETH — возвращаемся к сетке")
+            cancel_all_orders(client, SYMBOL)
+            place_grid_orders(client, SYMBOL, GRID_CAPITAL)
+            return
+
         try:
             client.create_order(
                 symbol=SYMBOL,
@@ -231,7 +228,7 @@ def rebalance_grid():
                 params={'tdMode': 'isolated', 'posSide': 'net'}
             )
             msg = (
-                f"🆕 Позиция открыта ({datetime.now(timezone.UTC).strftime('%Y-%m-%d %H:%M')})\n"
+                f"🆕 Позиция открыта ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})\n"
                 f"{direction.upper()} {size:.4f} ETH\n"
                 f"Цена входа: {price:.1f}"
             )
@@ -254,7 +251,7 @@ def rebalance_grid():
         order_count = 0
 
     msg = (
-        f"[{datetime.now(timezone.UTC).strftime('%Y-%m-%d %H:%M')}] Перебалансировка\n"
+        f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}] Перебалансировка\n"
         f"Цена: {price:.1f} | Капитал: {INITIAL_CAPITAL:.2f} USDT | Ордеров: {order_count}"
     )
     if current_positions:
@@ -281,7 +278,7 @@ def rebalance_grid():
         entry = last_positions['entry']
         result = "✅ Прибыль" if pnl > 0 else "❌ Убыток"
         msg = (
-            f"CloseOperation ({datetime.now(timezone.UTC).strftime('%Y-%m-%d %H:%M')})\n"
+            f"CloseOperation ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})\n"
             f"{result}\n"
             f"PnL: {pnl:.2f} USDT\n"
             f"{side.upper()} {size:.4f} ETH\n"
@@ -296,7 +293,7 @@ def rebalance_grid():
     if today != last_report_date:
         win_rate = round(winning_trades / total_trades * 100, 1) if total_trades > 0 else 0.0
         report = (
-            f"📊 ЕЖЕДНЕВНЫЙ ОТЧЁТ ({datetime.now(timezone.UTC).strftime('%Y-%m-%d %H:%M')})\n"
+            f"📊 ЕЖЕДНЕВНЫЙ ОТЧЁТ ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})\n"
             f"Общий PnL: {total_pnl:+.2f} USDT\n"
             f"Сделок: {total_trades}\n"
             f"Win Rate: {win_rate}%\n"
