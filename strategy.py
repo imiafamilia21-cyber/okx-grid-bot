@@ -82,19 +82,21 @@ def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=No
         grid_levels = 6
         step = (upper - lower) / (grid_levels * 2)
     else:
-        grid_range_pct = 15.0  # увеличен для ETH
+        grid_range_pct = 15.0
         lower = price * (1 - grid_range_pct / 100)
         upper = price * (1 + grid_range_pct / 100)
         center = price
         grid_levels = 6
         step = (upper - lower) / (grid_levels * 2)
 
+    total_usd = capital_usdt
     total_levels = grid_levels * 2
+    usd_per_level = total_usd / total_levels
+
     for i in range(1, grid_levels + 1):
         # Покупки
         buy_price = center - i * step
-        buy_usd = capital_usdt / total_levels
-        buy_size = buy_usd / buy_price
+        buy_size = usd_per_level / buy_price
         if buy_size >= min_size:
             try:
                 client.create_order(
@@ -110,8 +112,7 @@ def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=No
         
         # Продажи
         sell_price = center + i * step
-        sell_usd = capital_usdt / total_levels
-        sell_size = sell_usd / sell_price
+        sell_size = usd_per_level / sell_price
         if sell_size >= min_size:
             try:
                 client.create_order(
