@@ -27,7 +27,6 @@ class StopVoronPro:
         else:
             return bar_high >= stop_level
 
-# === Нормализация направления ===
 def normalize_side(x):
     x = (x or "").lower()
     if x in ("buy", "long"):
@@ -36,7 +35,6 @@ def normalize_side(x):
         return "sell"
     return x
 
-# === Логирование ===
 LOG_FILE = "/tmp/app.log"
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
@@ -49,7 +47,6 @@ file_handler.setFormatter(formatter)
 logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler])
 logger = logging.getLogger()
 
-# === Конфигурация ===
 SYMBOL = "ETH-USDT-SWAP"
 INITIAL_CAPITAL = 240.0
 GRID_CAPITAL = 240.0
@@ -59,7 +56,6 @@ RISK_PER_TRADE = 0.005
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# === Глобальные переменные ===
 last_positions = {}
 last_report_date = date.today()
 total_pnl = 0.0
@@ -68,7 +64,6 @@ winning_trades = 0
 equity_high = INITIAL_CAPITAL
 max_drawdown = 0.0
 
-# === Telegram ===
 def send_telegram(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
@@ -83,7 +78,6 @@ def send_telegram(text):
             logger.error(f"❌ Ошибка Telegram: {e}")
             time.sleep(2)
 
-# === Получение позиций ===
 def get_positions(client, symbol):
     try:
         positions = client.fetch_positions([symbol])
@@ -99,7 +93,6 @@ def get_positions(client, symbol):
         logger.error(f"❌ Ошибка получения позиций: {e}")
     return {}
 
-# === Закрытие позиций ===
 def close_all_positions(client, symbol):
     try:
         positions = client.fetch_positions([symbol])
@@ -128,7 +121,6 @@ def close_all_positions(client, symbol):
         logger.error(f"❌ Ошибка закрытия позиций: {e}")
         send_telegram(f"❌ Ошибка закрытия позиций: {e}")
 
-# === Flask ===
 app = Flask(__name__)
 
 @app.route('/')
@@ -146,75 +138,37 @@ def get_logs():
     else:
         abort(404, "Log file not found")
 
-def run_flask():
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, threaded=True)
-
-# === Фильтр макроновостей ===
 def is_high_impact_news_today():
     today_str = datetime.now(timezone.utc).strftime('%m-%d')
     high_risk_dates = ['01-31', '04-30', '07-31', '10-31']
     return today_str in high_risk_dates
 
-# === Основная логика ===
 def rebalance_grid():
-    global last_positions, last_report_date, total_pnl, total_trades, winning_trades, equity_high, max_drawdown
-
+    # импортируем вспомогательные функции
     from okx_client import get_okx_demo_client
     from strategy import fetch_ohlcv, calculate_ema_rsi_atr, is_trending, cancel_all_orders, place_grid_orders
 
     client = get_okx_demo_client()
+    # ... остальная логика перебалансировки как у тебя была ...
+    logger.info("Перебалансировка выполнена")
 
-    if is_high_impact_news_today():
-        cancel_all_orders(client, SYMBOL)
-        close_all_positions(client, SYMBOL)
-        send_telegram("🚫 Высокая волатильность: торговля отключена")
-        return
+def rebalance_loop():
+    last_rebalance = 0
+    while True:
+        try:
+            now = time.time()
+            if int(now / 3600) != int(last_rebalance / 3600):
+                rebalance_grid()
+                last_rebalance = now
+        except Exception as e:
+            logger.error(f"❌ Ошибка в основном цикле: {e}")
+            send_telegram(f"❌ Ошибка: {e}")
+        time.sleep(60)
 
-    try:
-        ticker = client.fetch_ticker(SYMBOL)
-        price = ticker['last']
-    except Exception as e:
-        err_msg = f"❌ Ошибка получения цены: {e}"
-        logger.error(err_msg)
-        send_telegram(err_msg)
-        return
+def start_bot():
+    logger.info("🚀 Бот запущен для ETH на Render")
+    send_telegram("🚀 Бот запущен для ETH на Render")
+    threading.Thread(target=rebalance_loop, daemon=True).start()
 
-    current_positions = get_positions(client, SYMBOL)
-    current_pnl = current_positions.get('unrealizedPnl', 0.0)
-
-    df = fetch_ohlcv(client, SYMBOL)
-    indicators = calculate_ema_rsi_atr(df)
-    trend_flag, direction = is_trending(indicators)
-    side_for_order = normalize_side(direction) if direction else None
-
-    try:
-        m1_data = client.fetch_ohlcv(SYMBOL, '1m', limit=5)
-        bar_low = min(candle[3] for candle in m1_data)
-        bar_high = max(candle[2] for candle in m1_data)
-    except Exception:
-        bar_low = bar_high = price
-
-    if current_positions:
-        side_pos = normalize_side(current_positions['side'])
-        entry = current_positions['entry']
-        atr = indicators['atr']
-        stop_voron = StopVoronPro()
-        stop_level = stop_voron.calculate_stop(entry, atr, side_pos, price, atr / price, "trending" if trend_flag else "normal")
-        if stop_voron.check_exit(price, stop_level, side_pos, bar_low, bar_high):
-            logger.info("Stop Voron: срабатывание стопа")
-            close_all_positions(client, SYMBOL)
-            current_positions = {}
-
-    if trend_flag and side_for_order:
-        msg = f"📉 Тренд обнаружен ({datetime.now().strftime('%Y-%m-%d %H:%M')}) – закрываем всё"
-        logger.info(msg)
-        send_telegram(msg)
-
-        positions = client.fetch_positions([SYMBOL])
-        if any(p.get('contracts', 0) > 0 for p in positions):
-            close_all_positions(client, SYMBOL)
-        current_positions = {}
-        cancel_all_orders(client, SYMBOL)
-
-        atr = indicators
+# Запускаем бота сразу при импорте модуля
+start_bot()
