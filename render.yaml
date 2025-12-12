@@ -1,0 +1,37 @@
+# render.yaml
+services:
+  - type: web
+    name: okx-grid-bot-web
+    runtime: python
+    env: python
+    region: oregon
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn --bind 0.0.0.0:$PORT wsgi:application"
+    envVars:
+      - key: TELEGRAM_TOKEN
+        fromDatabase:
+          name: okx-secrets
+          property: TELEGRAM_TOKEN
+      - key: TELEGRAM_CHAT_ID
+        fromDatabase:
+          name: okx-secrets
+          property: TELEGRAM_CHAT_ID
+      # ... остальные переменные
+
+  - type: worker
+    name: okx-grid-bot-worker
+    runtime: python
+    env: python
+    region: oregon
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
+    envVars:
+      - key: TELEGRAM_TOKEN
+        fromDatabase:
+          name: okx-secrets
+          property: TELEGRAM_TOKEN
+      - key: TELEGRAM_CHAT_ID
+        fromDatabase:
+          name: okx-secrets
+          property: TELEGRAM_CHAT_ID
+      # ... остальные переменные
