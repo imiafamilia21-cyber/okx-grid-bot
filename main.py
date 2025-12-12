@@ -3,7 +3,7 @@ import requests
 import logging
 import threading
 import os
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from flask import Flask, send_file, abort
 
 # === StopVoronPro v5 ===
@@ -83,7 +83,23 @@ def send_telegram(text):
             logger.error(f"❌ Ошибка Telegram: {e}")
             time.sleep(2)
 
-# === Закрытие позиций (исправлено) ===
+# === Получение позиций ===
+def get_positions(client, symbol):
+    try:
+        positions = client.fetch_positions([symbol])
+        for p in positions:
+            if p.get('contracts', 0) > 0:
+                return {
+                    'size': p['contracts'],
+                    'entry': p.get('entryPrice', 0),
+                    'side': p.get('side', ''),
+                    'unrealizedPnl': p.get('unrealizedPnl', 0)
+                }
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения позиций: {e}")
+    return {}
+
+# === Закрытие позиций (устойчивый маппинг) ===
 def close_all_positions(client, symbol):
     try:
         positions = client.fetch_positions([symbol])
@@ -91,8 +107,8 @@ def close_all_positions(client, symbol):
             return
         for p in positions:
             if p.get('contracts', 0) > 0:
-                pside = (p.get('side') or "").lower()
-                side = 'buy' if pside in ('short', 'sell') else 'sell'
+                pside = normalize_side(p.get('side'))
+                side = 'buy' if pside in ('sell', 'short') else 'sell'
                 size = p['contracts']
                 client.create_order(
                     symbol=symbol,
@@ -103,7 +119,7 @@ def close_all_positions(client, symbol):
                 )
                 msg = (
                     f"🔴 Закрыта позиция ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-                    f"{p.get('side','?').upper()} {size:.4f} ETH\n"
+                    f"{(p.get('side','?')).upper()} {size:.4f} ETH\n"
                     f"Вход: {p.get('entryPrice', 0):.1f} → PnL: {p.get('unrealizedPnl', 0):+.2f} USDT"
                 )
                 logger.info(msg)
@@ -112,24 +128,12 @@ def close_all_positions(client, symbol):
         logger.error(f"❌ Ошибка закрытия позиций: {e}")
         send_telegram(f"❌ Ошибка закрытия позиций: {e}")
 
-# === Получение позиций ===
-def get_positions(client, symbol):
-    try:
-        positions = client.fetch_positions([symbol])
-        for p in positions:
-            if p.get('contracts', 0) > 0:
-                return {
-                    'size': p['contracts'],
-                    'entry': p['entryPrice'],
-                    'side': p['side'],
-                    'unrealizedPnl': p.get('unrealizedPnl', 0)
-                }
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения позиций: {e}")
-    return {}
-
 # === Flask ===
 app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return 'Service is running'
 
 @app.route('/health')
 def health():
@@ -148,7 +152,7 @@ def run_flask():
 
 # === Фильтр макроновостей ===
 def is_high_impact_news_today():
-    today_str = datetime.utcnow().strftime('%m-%d')
+    today_str = datetime.now(timezone.utc).strftime('%m-%d')
     high_risk_dates = ['01-31', '04-30', '07-31', '10-31']
     return today_str in high_risk_dates
 
@@ -182,27 +186,32 @@ def rebalance_grid():
     df = fetch_ohlcv(client, SYMBOL)
     indicators = calculate_ema_rsi_atr(df)
     trend_flag, direction = is_trending(indicators)
+    side_for_order = normalize_side(direction) if direction else None
 
     try:
         m1_data = client.fetch_ohlcv(SYMBOL, '1m', limit=5)
         bar_low = min(candle[3] for candle in m1_data)
         bar_high = max(candle[2] for candle in m1_data)
-    except:
+    except Exception:
         bar_low = bar_high = price
 
+    # Управление стопом по существующей позиции
     if current_positions:
-        side = current_positions['side']
+        side_pos = normalize_side(current_positions['side'])
         entry = current_positions['entry']
         atr = indicators['atr']
         stop_voron = StopVoronPro()
-        stop_level = stop_voron.calculate_stop(entry, atr, normalize_side(side), price, atr/price, "trending" if trend_flag else "normal")
-        if stop_voron.check_exit(price, stop_level, normalize_side(side), bar_low, bar_high):
+        stop_level = stop_voron.calculate_stop(
+            entry, atr, side_pos, price, atr / price,
+            "trending" if trend_flag else "normal"
+        )
+        if stop_voron.check_exit(price, stop_level, side_pos, bar_low, bar_high):
             logger.info("Stop Voron: срабатывание стопа")
             close_all_positions(client, SYMBOL)
             current_positions = {}
 
-    if trend_flag:
-        side_for_order = normalize_side(direction)
+    # Трендовый режим
+    if trend_flag and side_for_order:
         msg = f"📉 Тренд обнаружен ({datetime.now().strftime('%Y-%m-%d %H:%M')}) – закрываем всё"
         logger.info(msg)
         send_telegram(msg)
@@ -214,116 +223,4 @@ def rebalance_grid():
         cancel_all_orders(client, SYMBOL)
 
         atr = indicators['atr']
-        stop_price = price - 2 * atr if side_for_order == "buy" else price + 2 * atr
-        risk_usd = TREND_CAPITAL * RISK_PER_TRADE
-        distance = abs(price - stop_price)
-        if distance <= 0:
-            return
-        size = risk_usd / distance
-
-        if size < 0.01:
-            logger.info(f"Размер {size:.4f} ETH < 0.01 — возвращаемся к сетке")
-            send_telegram("⚠️ Размер < 0.01 ETH — возвращаемся к сетке")
-            cancel_all_orders(client, SYMBOL)
-            place_grid_orders(client, SYMBOL, GRID_CAPITAL)
-            return
-
-        try:
-            client.create_order(
-                symbol=SYMBOL,
-                type='market',
-                side=side_for_order,
-                amount=size,
-                params={'tdMode': 'isolated', 'posSide': 'net'}
-            )
-            msg = (
-                f"🆕 Позиция открыта ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-                f"{side_for_order.upper()} {size:.4f} ETH\n"
-                f"Цена входа: {price:.1f}"
-            )
-            logger.info(msg)
-            send_telegram(msg)
-            current_positions = get_positions(client, SYMBOL)
-        except Exception as e:
-            send_telegram(f"❌ Ошибка трендового входа: {e}")
-    else:
-        if current_positions:
-            close_all_positions(client, SYMBOL)
-            current_positions = {}
-        cancel_all_orders(client, SYMBOL)
-        place_grid_orders(client, SYMBOL, GRID_CAPITAL)
-
-    try:
-        open_orders = client.fetch_open_orders(SYMBOL)
-        order_count = len(open_orders)
-    except:
-        order_count = 0
-
-    msg = (
-        f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Перебалансировка\n"
-        f"Цена: {price:.1f} | Капитал: {INITIAL_CAPITAL:.2f} USDT | Ордеров: {order_count}"
-    )
-    if current_positions:
-        msg += f"\nПозиция: {current_positions['side']} {current_positions['size']:.4f} ETH | PnL: {current_pnl:.2f} USDT"
-    logger.info(msg)
-    send_telegram(msg)
-
-    if last_positions and not current_positions:
-        pnl = last_positions.get('unrealizedPnl', 0)
-        total_pnl += pnl
-        total_trades += 1
-        if pnl > 0:
-            winning_trades += 1
-
-        equity = INITIAL_CAPITAL + total_pnl
-        if equity > equity_high:
-            equity_high = equity
-        drawdown = (equity_high - equity) / equity_high * 100 if equity_high > 0 else 0
-        if drawdown > max_drawdown:
-            max_drawdown = drawdown
-
-        side = last_positions['side']
-        size = last_positions['size']
-        entry = last_positions['entry']
-        result = "✅ Прибыль" if pnl > 0 else "❌ Убыток"
-        msg = (
-            f"OperationException ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-            f"{result}\n"
-            f"PnL: {pnl:.2f} USDT\n"
-            f"{side.upper()} {size:.4f} ETH\n"
-            f"Вход: {entry:.1f} → Выход: ~{price:.1f}"
-        )
-        logger.info(msg)
-        send_telegram(msg)
-
-    last_positions = current_positions.copy() if current_positions else {}
-
-    today = date.today()
-    if today != last_report_date:
-        win_rate = round(winning_trades / total_trades * 100, 1) if total_trades > 0 else 0.0
-        report = (
-            f"📊 ЕЖЕДНЕВНЫЙ ОТЧЁТ ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-            f"Общий PnL: {total_pnl:+.2f} USDT\n"
-            f"Сделок: {total_trades}\n"
-            f"Win Rate: {win_rate}%\n"
-            f"Макс. просадка: {max_drawdown:.2f}%"
-        )
-        logger.info(report)
-        send_telegram(report)
-        last_report_date = today
-
-# === Запуск ===
-if __name__ == "__main__":
-    logger.info("🚀 Бот запущен для ETH на Render")
-    threading.Thread(target=run_flask, daemon=True).start()
-    last_rebalance = 0
-    while True:
-        try:
-            now = time.time()
-            if int(now / 3600) != int(last_rebalance / 3600):
-                rebalance_grid()
-                last_rebalance = now
-        except Exception as e:
-            logger.error(f"❌ Ошибка в основном цикле: {e}")
-            send_telegram(f"❌ Ошибка: {e}")
-        time.sleep(60)
+        stop

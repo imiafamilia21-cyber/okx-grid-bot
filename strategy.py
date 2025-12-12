@@ -72,7 +72,7 @@ def cancel_all_orders(client, symbol):
 def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=None):
     ticker = client.fetch_ticker(symbol)
     price = ticker['last']
-    min_size = 0.001  # ← ИСПРАВЛЕНО: OKX позволяет 0.001 ETH
+    min_size = 0.01  # минимальный лот ETH на OKX
 
     if upper_pct is not None and lower_pct is not None:
         upper = price * (1 + upper_pct / 100)
@@ -108,7 +108,9 @@ def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=No
                 )
             except Exception as e:
                 logger.error(f"❌ Ошибка покупки на {buy_price}: {e}")
-        
+        else:
+            logger.info(f"Пропуск покупки: размер {buy_size:.4f} ETH < {min_size}")
+
         # Продажи
         sell_price = center + i * step
         sell_size = usd_per_level / sell_price
@@ -124,3 +126,5 @@ def place_grid_orders(client, symbol, capital_usdt, upper_pct=None, lower_pct=No
                 )
             except Exception as e:
                 logger.error(f"❌ Ошибка продажи на {sell_price}: {e}")
+        else:
+            logger.info(f"Пропуск продажи: размер {sell_size:.4f} ETH < {min_size}")
