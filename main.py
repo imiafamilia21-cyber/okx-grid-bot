@@ -14,7 +14,6 @@ class StopVoronPro:
         self.max_risk_pct = max_risk_pct
 
     def calculate_stop(self, entry, atr, side, current_price, volatility_ratio, market_regime="normal"):
-        # side ожидается 'buy'/'sell'
         risk_pct = 0.010 if market_regime == "trending" else 0.008
         stop_distance = risk_pct * current_price
         atr_distance = self.base_atr_mult * atr
@@ -28,21 +27,13 @@ class StopVoronPro:
         else:
             return bar_high >= stop_level
 
-# === Утилиты направления ===
+# === Нормализация направления ===
 def normalize_side(x):
     x = (x or "").lower()
     if x in ("buy", "long"):
         return "buy"
     if x in ("sell", "short"):
         return "sell"
-    return x
-
-def inverse_side(x):
-    x = normalize_side(x)
-    if x == "buy":
-        return "sell"
-    if x == "sell":
-        return "buy"
     return x
 
 # === Логирование ===
@@ -68,9 +59,6 @@ RISK_PER_TRADE = 0.005
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Посещение режима хеджирования через ENV (optional): HEDGE_MODE=true/false
-HEDGE_MODE = (os.getenv("HEDGE_MODE", "false").lower() == "true")
-
 # === Глобальные переменные ===
 last_positions = {}
 last_report_date = date.today()
@@ -95,22 +83,7 @@ def send_telegram(text):
             logger.error(f"❌ Ошибка Telegram: {e}")
             time.sleep(2)
 
-# === Позиции ===
-def get_positions(client, symbol):
-    try:
-        positions = client.fetch_positions([symbol])
-        for p in positions:
-            if p.get('contracts', 0) > 0:
-                return {
-                    'size': p['contracts'],
-                    'entry': p.get('entryPrice', 0),
-                    'side': normalize_side(p.get('side')),
-                    'unrealizedPnl': p.get('unrealizedPnl', 0)
-                }
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения позиций: {e}")
-    return {}
-
+# === Закрытие позиций (исправлено) ===
 def close_all_positions(client, symbol):
     try:
         positions = client.fetch_positions([symbol])
@@ -118,25 +91,19 @@ def close_all_positions(client, symbol):
             return
         for p in positions:
             if p.get('contracts', 0) > 0:
-                pside = normalize_side(p.get('side'))
-                side = inverse_side(pside)  # short/sell → buy; long/buy → sell
+                pside = (p.get('side') or "").lower()
+                side = 'buy' if pside in ('short', 'sell') else 'sell'
                 size = p['contracts']
-                params = {'reduceOnly': True, 'tdMode': 'isolated'}
-                if HEDGE_MODE:
-                    # для hedge-режима нужен posSide long/short
-                    params['posSide'] = 'long' if side == 'sell' else 'short'  # мы закрываем обратной стороной
-                else:
-                    params['posSide'] = 'net'
                 client.create_order(
                     symbol=symbol,
                     type='market',
                     side=side,
                     amount=size,
-                    params=params
+                    params={'reduceOnly': True, 'tdMode': 'isolated', 'posSide': 'net'}
                 )
                 msg = (
                     f"🔴 Закрыта позиция ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
-                    f"{(p.get('side','?')).upper()} {size:.4f} ETH\n"
+                    f"{p.get('side','?').upper()} {size:.4f} ETH\n"
                     f"Вход: {p.get('entryPrice', 0):.1f} → PnL: {p.get('unrealizedPnl', 0):+.2f} USDT"
                 )
                 logger.info(msg)
@@ -144,6 +111,22 @@ def close_all_positions(client, symbol):
     except Exception as e:
         logger.error(f"❌ Ошибка закрытия позиций: {e}")
         send_telegram(f"❌ Ошибка закрытия позиций: {e}")
+
+# === Получение позиций ===
+def get_positions(client, symbol):
+    try:
+        positions = client.fetch_positions([symbol])
+        for p in positions:
+            if p.get('contracts', 0) > 0:
+                return {
+                    'size': p['contracts'],
+                    'entry': p['entryPrice'],
+                    'side': p['side'],
+                    'unrealizedPnl': p.get('unrealizedPnl', 0)
+                }
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения позиций: {e}")
+    return {}
 
 # === Flask ===
 app = Flask(__name__)
@@ -199,31 +182,28 @@ def rebalance_grid():
     df = fetch_ohlcv(client, SYMBOL)
     indicators = calculate_ema_rsi_atr(df)
     trend_flag, direction = is_trending(indicators)
-    side_for_order = normalize_side(direction)
 
     try:
         m1_data = client.fetch_ohlcv(SYMBOL, '1m', limit=5)
         bar_low = min(candle[3] for candle in m1_data)
         bar_high = max(candle[2] for candle in m1_data)
-    except Exception:
+    except:
         bar_low = bar_high = price
 
     if current_positions:
-        side_pos = normalize_side(current_positions['side'])
+        side = current_positions['side']
         entry = current_positions['entry']
         atr = indicators['atr']
         stop_voron = StopVoronPro()
-        stop_level = stop_voron.calculate_stop(
-            entry, atr, side_pos, price, atr / price,
-            "trending" if trend_flag else "normal"
-        )
-        if stop_voron.check_exit(price, stop_level, side_pos, bar_low, bar_high):
+        stop_level = stop_voron.calculate_stop(entry, atr, normalize_side(side), price, atr/price, "trending" if trend_flag else "normal")
+        if stop_voron.check_exit(price, stop_level, normalize_side(side), bar_low, bar_high):
             logger.info("Stop Voron: срабатывание стопа")
             close_all_positions(client, SYMBOL)
             current_positions = {}
 
     if trend_flag:
-        msg = f"📉 Тренд обнаружен ({datetime.now().strftime('%Y-%m-%d %H:%М')}) – закрываем всё"
+        side_for_order = normalize_side(direction)
+        msg = f"📉 Тренд обнаружен ({datetime.now().strftime('%Y-%m-%d %H:%M')}) – закрываем всё"
         logger.info(msg)
         send_telegram(msg)
 
@@ -249,18 +229,12 @@ def rebalance_grid():
             return
 
         try:
-            params = {'tdMode': 'isolated'}
-            if HEDGE_MODE:
-                params['posSide'] = 'long' if side_for_order == 'buy' else 'short'
-            else:
-                params['posSide'] = 'net'
-
             client.create_order(
                 symbol=SYMBOL,
                 type='market',
                 side=side_for_order,
                 amount=size,
-                params=params
+                params={'tdMode': 'isolated', 'posSide': 'net'}
             )
             msg = (
                 f"🆕 Позиция открыта ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
@@ -282,7 +256,7 @@ def rebalance_grid():
     try:
         open_orders = client.fetch_open_orders(SYMBOL)
         order_count = len(open_orders)
-    except Exception:
+    except:
         order_count = 0
 
     msg = (
