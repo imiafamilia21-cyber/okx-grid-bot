@@ -99,7 +99,7 @@ def get_positions(client, symbol):
         logger.error(f"❌ Ошибка получения позиций: {e}")
     return {}
 
-# === Закрытие позиций (устойчивый маппинг) ===
+# === Закрытие позиций ===
 def close_all_positions(client, symbol):
     try:
         positions = client.fetch_positions([symbol])
@@ -195,22 +195,17 @@ def rebalance_grid():
     except Exception:
         bar_low = bar_high = price
 
-    # Управление стопом по существующей позиции
     if current_positions:
         side_pos = normalize_side(current_positions['side'])
         entry = current_positions['entry']
         atr = indicators['atr']
         stop_voron = StopVoronPro()
-        stop_level = stop_voron.calculate_stop(
-            entry, atr, side_pos, price, atr / price,
-            "trending" if trend_flag else "normal"
-        )
+        stop_level = stop_voron.calculate_stop(entry, atr, side_pos, price, atr / price, "trending" if trend_flag else "normal")
         if stop_voron.check_exit(price, stop_level, side_pos, bar_low, bar_high):
             logger.info("Stop Voron: срабатывание стопа")
             close_all_positions(client, SYMBOL)
             current_positions = {}
 
-    # Трендовый режим
     if trend_flag and side_for_order:
         msg = f"📉 Тренд обнаружен ({datetime.now().strftime('%Y-%m-%d %H:%M')}) – закрываем всё"
         logger.info(msg)
@@ -222,5 +217,4 @@ def rebalance_grid():
         current_positions = {}
         cancel_all_orders(client, SYMBOL)
 
-        atr = indicators['atr']
-        stop
+        atr = indicators
