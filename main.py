@@ -3,7 +3,7 @@ import requests
 import logging
 import threading
 import os
-from datetime import datetime, date
+from datetime import datetime, date, UTC  # ← добавлен UTC
 from flask import Flask, send_file, abort
 
 # === StopVoronPro v5 ===
@@ -135,6 +135,10 @@ app = Flask(__name__)
 def health():
     return 'OK'
 
+@app.route('/')  # ← добавлен маршрут для корня
+def index():
+    return 'Service is running'
+
 @app.route('/logs')
 def get_logs():
     if os.path.exists(LOG_FILE):
@@ -148,7 +152,7 @@ def run_flask():
 
 # === Фильтр макроновостей ===
 def is_high_impact_news_today():
-    today_str = datetime.utcnow().strftime('%m-%d')
+    today_str = datetime.now(UTC).strftime('%m-%d')  # ← исправлено: utcnow → datetime.now(UTC)
     high_risk_dates = ['01-31', '04-30', '07-31', '10-31']
     return today_str in high_risk_dates
 
@@ -203,7 +207,7 @@ def rebalance_grid():
 
     if trend_flag:
         side_for_order = normalize_side(direction)
-        msg = f"📉 Тренд обнаружен ({datetime.now().strftime('%Y-%m-%d %H:%M')}) – закрываем всё"
+        msg = f"📉 Тренд обнаружен ({datetime.now().strftime('%Y-%m-%d %H:%M')}) – закрываем всё"  # ← исправлено: %М → %M
         logger.info(msg)
         send_telegram(msg)
 
