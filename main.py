@@ -33,9 +33,9 @@ os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
 console_handler = logging.StreamHandler()
-file_handler = logging.FileHandler(LOG_ERROR, encoding='utf-8')
-file_handler.setFormatter(formatter)
+file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
 console_handler.setFormatter(formatter)
+file_handler.setFormatter(formatter)
 
 logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler])
 logger = logging.getLogger()
