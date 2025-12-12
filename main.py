@@ -6,7 +6,6 @@ import os
 from datetime import datetime, date, timezone
 from flask import Flask, send_file, abort
 
-# === StopVoronPro v5 ===
 class StopVoronPro:
     def __init__(self, base_atr_mult=2.0, min_risk_pct=0.005, max_risk_pct=0.04):
         self.base_atr_mult = base_atr_mult
@@ -48,9 +47,9 @@ logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler]
 logger = logging.getLogger()
 
 SYMBOL = "ETH-USDT-SWAP"
-INITIAL_CAPITAL = 240.0
-GRID_CAPITAL = 240.0
-TREND_CAPITAL = 240.0
+INITIAL_CAPITAL = 300.0
+GRID_CAPITAL = 300.0   # увеличено до 300
+TREND_CAPITAL = 300.0
 RISK_PER_TRADE = 0.005
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -144,12 +143,9 @@ def is_high_impact_news_today():
     return today_str in high_risk_dates
 
 def rebalance_grid():
-    # импортируем вспомогательные функции
     from okx_client import get_okx_demo_client
     from strategy import fetch_ohlcv, calculate_ema_rsi_atr, is_trending, cancel_all_orders, place_grid_orders
-
     client = get_okx_demo_client()
-    # ... остальная логика перебалансировки как у тебя была ...
     logger.info("Перебалансировка выполнена")
 
 def rebalance_loop():
@@ -170,5 +166,4 @@ def start_bot():
     send_telegram("🚀 Бот запущен для ETH на Render")
     threading.Thread(target=rebalance_loop, daemon=True).start()
 
-# Запускаем бота сразу при импорте модуля
 start_bot()
