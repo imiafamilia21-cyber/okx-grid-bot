@@ -3,7 +3,7 @@ import requests
 import logging
 import threading
 import os
-from datetime import datetime, date, timezone
+from datetime import datetime, date
 from flask import Flask, send_file, abort
 
 # === ВСТРОЕННЫЙ StopVoronPro v5 ===
@@ -33,18 +33,18 @@ os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
 console_handler = logging.StreamHandler()
-file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
-console_handler.setFormatter(formatter)
+file_handler = logging.FileHandler(LOG_ERROR, encoding='utf-8')
 file_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
 
 logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler])
 logger = logging.getLogger()
 
 # === Конфигурация ===
 SYMBOL = "ETH-USDT-SWAP"
-INITIAL_CAPITAL = 240.0  # Увеличено до $240
-GRID_CAPITAL = 168.0     # 70% от $240
-TREND_CAPITAL = 72.0     # 30% от $240
+INITIAL_CAPITAL = 240.0
+GRID_CAPITAL = 168.0
+TREND_CAPITAL = 72.0
 RISK_PER_TRADE = 0.005
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -109,7 +109,7 @@ def close_all_positions(client, symbol):
                     params={'reduceOnly': True, 'tdMode': 'isolated', 'posSide': 'net'}
                 )
                 msg = (
-                    f"🔴 Закрыта позиция ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})\n"
+                    f"🔴 Закрыта позиция ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
                     f"{p['side'].upper()} {size:.4f} ETH\n"
                     f"Вход: {p['entryPrice']:.1f} → PnL: {p.get('unrealizedPnl', 0):+.2f} USDT"
                 )
@@ -139,7 +139,7 @@ def run_flask():
 
 # === Фильтр макроновостей ===
 def is_high_impact_news_today():
-    today_str = datetime.now(timezone.utc).strftime('%m-%d')
+    today_str = datetime.utcnow().strftime('%m-%d')
     high_risk_dates = ['01-31', '04-30', '07-31', '10-31']
     return today_str in high_risk_dates
 
@@ -193,7 +193,7 @@ def rebalance_grid():
             current_positions = {}
 
     if trend_flag:
-        msg = f"📉 Тренд обнаружен ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}) – закрываем всё"
+        msg = f"📉 Тренд обнаружен ({datetime.now().strftime('%Y-%m-%d %H:%M')}) – закрываем всё"
         logger.info(msg)
         send_telegram(msg)
 
@@ -228,7 +228,7 @@ def rebalance_grid():
                 params={'tdMode': 'isolated', 'posSide': 'net'}
             )
             msg = (
-                f"🆕 Позиция открыта ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})\n"
+                f"🆕 Позиция открыта ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
                 f"{direction.upper()} {size:.4f} ETH\n"
                 f"Цена входа: {price:.1f}"
             )
@@ -251,7 +251,7 @@ def rebalance_grid():
         order_count = 0
 
     msg = (
-        f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}] Перебалансировка\n"
+        f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] Перебалансировка\n"
         f"Цена: {price:.1f} | Капитал: {INITIAL_CAPITAL:.2f} USDT | Ордеров: {order_count}"
     )
     if current_positions:
@@ -278,7 +278,7 @@ def rebalance_grid():
         entry = last_positions['entry']
         result = "✅ Прибыль" if pnl > 0 else "❌ Убыток"
         msg = (
-            f"CloseOperation ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})\n"
+            f"OperationException ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
             f"{result}\n"
             f"PnL: {pnl:.2f} USDT\n"
             f"{side.upper()} {size:.4f} ETH\n"
@@ -293,7 +293,7 @@ def rebalance_grid():
     if today != last_report_date:
         win_rate = round(winning_trades / total_trades * 100, 1) if total_trades > 0 else 0.0
         report = (
-            f"📊 ЕЖЕДНЕВНЫЙ ОТЧЁТ ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')})\n"
+            f"📊 ЕЖЕДНЕВНЫЙ ОТЧЁТ ({datetime.now().strftime('%Y-%m-%d %H:%M')})\n"
             f"Общий PnL: {total_pnl:+.2f} USDT\n"
             f"Сделок: {total_trades}\n"
             f"Win Rate: {win_rate}%\n"
@@ -305,7 +305,7 @@ def rebalance_grid():
 
 # === Запуск ===
 if __name__ == "__main__":
-    logger.info("🚀 Бот запущен для ETH с капиталом $240 и Stop Voron v5")
+    logger.info("🚀 Бот запущен для ETH с полной защитой риска и Stop Voron v5")
     threading.Thread(target=run_flask, daemon=True).start()
     last_rebalance = 0
     while True:
